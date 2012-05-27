@@ -15,15 +15,24 @@ extra-source-files:
   -- C sources only used on some systems
   cbits/ancilData.c cbits/asyncAccept.c cbits/initWinSock.c
   cbits/winSockErr.c
+  cbits/crc32.h cbits/inffast.h cbits/inflate.h
+  cbits/trees.h cbits/deflate.h cbits/inffixed.h
+  cbits/inftrees.h cbits/zutil.h  
 
 Executable cabal
     Main-Is:            Main.hs
     ghc-options:        -Wall
     include-dirs: include
-    includes: HsNet.h
+    includes: HsNet.h zlib.h
     install-includes: HsNet.h HsNetworkConfig.h
+    extra-libraries: z
     c-sources: cbits/HsNet.c
     Other-Modules:
+        Codec.Compression.GZip,
+        Codec.Compression.Zlib,
+        Codec.Compression.Zlib.Raw,
+        Codec.Compression.Zlib.Internal
+        Codec.Compression.Zlib.Stream    
         Control.Monad.Cont
         Control.Monad.Cont.Class
         Control.Monad.Error
