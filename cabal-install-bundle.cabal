@@ -112,7 +112,24 @@ Executable cabal
         Network.URI
         Network.Socket.ByteString.Internal
         Network.Socket.ByteString.IOVec
-        Network.Socket.ByteString.MsgHdr        
+        Network.Socket.ByteString.MsgHdr
+        Network.BufferType,
+        Network.Stream,
+        Network.StreamDebugger,
+        Network.StreamSocket,
+        Network.TCP,                
+        Network.HTTP,
+        Network.HTTP.Headers,
+        Network.HTTP.Base,
+        Network.HTTP.Stream,
+        Network.HTTP.Auth,
+        Network.HTTP.Cookie,
+        Network.HTTP.Proxy,
+        Network.HTTP.HandleStream,
+        Network.Browser
+        Network.HTTP.Base64,
+        Network.HTTP.MD5Aux,
+        Network.HTTP.Utils
         Distribution.Client.BuildReports.Anonymous
         Distribution.Client.BuildReports.Storage
         Distribution.Client.BuildReports.Types
