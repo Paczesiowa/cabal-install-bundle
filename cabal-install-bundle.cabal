@@ -44,7 +44,31 @@ Executable cabal
         Control.Monad.Writer
         Control.Monad.Writer.Class
         Control.Monad.Writer.Lazy
-        Control.Monad.Writer.Strict    
+        Control.Monad.Writer.Strict
+        Control.Applicative.Backwards
+        Control.Applicative.Lift
+        Control.Monad.IO.Class
+        Control.Monad.Trans.Class
+        Control.Monad.Trans.Cont
+        Control.Monad.Trans.Error
+        Control.Monad.Trans.Identity
+        Control.Monad.Trans.List
+        Control.Monad.Trans.Maybe
+        Control.Monad.Trans.Reader
+        Control.Monad.Trans.RWS
+        Control.Monad.Trans.RWS.Lazy
+        Control.Monad.Trans.RWS.Strict
+        Control.Monad.Trans.State
+        Control.Monad.Trans.State.Lazy
+        Control.Monad.Trans.State.Strict
+        Control.Monad.Trans.Writer
+        Control.Monad.Trans.Writer.Lazy
+        Control.Monad.Trans.Writer.Strict
+        Data.Functor.Compose
+        Data.Functor.Constant
+        Data.Functor.Identity
+        Data.Functor.Product
+        Data.Functor.Reverse        
         Text.Parsec,
         Text.Parsec.String,
         Text.Parsec.ByteString,
