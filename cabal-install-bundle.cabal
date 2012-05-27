@@ -4,12 +4,36 @@ Synopsis:           The (bundled) command-line interface for Cabal and Hackage.
 Maintainer:         paczesiowa@gmail.com
 Category:           Distribution
 Build-type:         Simple
-Cabal-Version:      >= 1.6
+Cabal-Version:      >= 1.8
+extra-tmp-files:
+  config.log config.status autom4te.cache network.buildinfo
+  include/HsNetworkConfig.h
+extra-source-files:
+  config.guess config.sub install-sh
+  configure.ac configure network.buildinfo.in
+  include/HsNetworkConfig.h.in include/HsNet.h
+  -- C sources only used on some systems
+  cbits/ancilData.c cbits/asyncAccept.c cbits/initWinSock.c
+  cbits/winSockErr.c
 
 Executable cabal
     Main-Is:            Main.hs
     ghc-options:        -Wall
+    include-dirs: include
+    includes: HsNet.h
+    install-includes: HsNet.h HsNetworkConfig.h
+    c-sources: cbits/HsNet.c
     Other-Modules:
+        Network
+        Network.BSD
+        Network.Socket
+        Network.Socket.ByteString
+        Network.Socket.ByteString.Lazy
+        Network.Socket.Internal
+        Network.URI
+        Network.Socket.ByteString.Internal
+        Network.Socket.ByteString.IOVec
+        Network.Socket.ByteString.MsgHdr        
         Distribution.Client.BuildReports.Anonymous
         Distribution.Client.BuildReports.Storage
         Distribution.Client.BuildReports.Types
@@ -75,4 +99,4 @@ Executable cabal
 
     build-depends: base, Cabal, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
 
-    extensions: CPP
+    extensions: CPP, DeriveDataTypeable, ForeignFunctionInterface, TypeSynonymInstances
