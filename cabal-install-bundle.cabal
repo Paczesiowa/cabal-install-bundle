@@ -24,6 +24,31 @@ Executable cabal
     install-includes: HsNet.h HsNetworkConfig.h
     c-sources: cbits/HsNet.c
     Other-Modules:
+        Text.Parsec,
+        Text.Parsec.String,
+        Text.Parsec.ByteString,
+        Text.Parsec.ByteString.Lazy,
+        Text.Parsec.Text,
+        Text.Parsec.Text.Lazy,
+        Text.Parsec.Pos,
+        Text.Parsec.Error,
+        Text.Parsec.Prim,
+        Text.Parsec.Char,
+        Text.Parsec.Combinator,
+        Text.Parsec.Token,
+        Text.Parsec.Expr,
+        Text.Parsec.Language,
+        Text.Parsec.Perm,
+        Text.ParserCombinators.Parsec,
+        Text.ParserCombinators.Parsec.Char,
+        Text.ParserCombinators.Parsec.Combinator,
+        Text.ParserCombinators.Parsec.Error,
+        Text.ParserCombinators.Parsec.Expr,
+        Text.ParserCombinators.Parsec.Language,
+        Text.ParserCombinators.Parsec.Perm,
+        Text.ParserCombinators.Parsec.Pos,
+        Text.ParserCombinators.Parsec.Prim,
+        Text.ParserCombinators.Parsec.Token    
         Network
         Network.BSD
         Network.Socket
@@ -99,4 +124,4 @@ Executable cabal
 
     build-depends: base, Cabal, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
 
-    extensions: CPP, DeriveDataTypeable, ForeignFunctionInterface, TypeSynonymInstances
+    extensions: CPP, DeriveDataTypeable, ForeignFunctionInterface, TypeSynonymInstances, ExistentialQuantification, PolymorphicComponents, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DeriveDataTypeable
