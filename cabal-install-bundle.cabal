@@ -28,6 +28,7 @@ Executable cabal
     extra-libraries: z
     c-sources: cbits/HsNet.c
     Other-Modules:
+        System.Random
         Codec.Compression.GZip,
         Codec.Compression.Zlib,
         Codec.Compression.Zlib.Raw,
