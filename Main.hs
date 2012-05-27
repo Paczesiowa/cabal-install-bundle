@@ -73,7 +73,7 @@ import Distribution.Text
          ( display )
 import Distribution.Verbosity as Verbosity
        ( Verbosity, normal, intToVerbosity, lessVerbose )
-import qualified Paths_cabal_install (version)
+import qualified Paths_cabal_install_bundle (version)
 
 import System.Environment       (getArgs, getProgName)
 import System.Exit              (exitFailure)
@@ -117,9 +117,9 @@ mainWorker args = topHandler $
             ++ "  " ++ configFile ++ "\n"
     printOptionsList = putStr . unlines
     printErrors errs = die $ concat (intersperse "\n" errs)
-    printNumericVersion = putStrLn $ display Paths_cabal_install.version
+    printNumericVersion = putStrLn $ display Paths_cabal_install_bundle.version
     printVersion        = putStrLn $ "cabal-install version "
-                                  ++ display Paths_cabal_install.version
+                                  ++ display Paths_cabal_install_bundle.version
                                   ++ "\nusing version "
                                   ++ display cabalVersion
                                   ++ " of the Cabal library "

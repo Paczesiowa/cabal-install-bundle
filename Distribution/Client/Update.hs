@@ -21,7 +21,7 @@ import Distribution.Client.FetchUtils
 import qualified Distribution.Client.PackageIndex as PackageIndex
 import Distribution.Client.IndexUtils
          ( getSourcePackages, updateRepoIndexCache )
-import qualified Paths_cabal_install
+import qualified Paths_cabal_install_bundle
          ( version )
 
 import Distribution.Package
@@ -68,7 +68,7 @@ checkForSelfUpgrade verbosity repos = do
 
   let self = PackageName "cabal-install"
       preferredVersionRange  = fromMaybe anyVersion (Map.lookup self prefs)
-      currentVersion         = Paths_cabal_install.version
+      currentVersion         = Paths_cabal_install_bundle.version
       laterPreferredVersions =
         [ packageVersion pkg
         | pkg <- PackageIndex.lookupPackageName sourcePkgIndex self
