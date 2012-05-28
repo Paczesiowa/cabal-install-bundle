@@ -21,7 +21,7 @@ module Distribution.Client.Unpack (
 import Distribution.Package
          ( PackageId, packageId )
 import Distribution.Simple.Setup
-         ( fromFlag, fromFlagOrDefault )
+         ( fromFlagOrDefault )
 import Distribution.Simple.Utils
          ( notice, die )
 import Distribution.Verbosity
@@ -36,7 +36,7 @@ import Distribution.Client.Dependency
 import Distribution.Client.FetchUtils
 import qualified Distribution.Client.Tar as Tar (extractTarGzFile)
 import Distribution.Client.IndexUtils as IndexUtils
-        ( getSourcePackages )
+        ( getAvailablePackages )
 
 import System.Directory
          ( createDirectoryIfMissing, doesDirectoryExist, doesFileExist )
@@ -60,16 +60,14 @@ unpack verbosity _ _ _ [] =
 unpack verbosity repos globalFlags unpackFlags userTargets = do
   mapM_ checkTarget userTargets
 
-  sourcePkgDb   <- getSourcePackages verbosity repos
+  availableDb   <- getAvailablePackages verbosity repos
 
   pkgSpecifiers <- resolveUserTargets verbosity
-                     (fromFlag $ globalWorldFile globalFlags)
-                     (packageIndex sourcePkgDb)
-                     userTargets
+                     globalFlags (packageIndex availableDb) userTargets
 
   pkgs <- either (die . unlines . map show) return $
             resolveWithoutDependencies
-              (resolverParams sourcePkgDb pkgSpecifiers)
+              (resolverParams availableDb pkgSpecifiers)
 
   unless (null prefix) $
          createDirectoryIfMissing True prefix
@@ -91,10 +89,10 @@ unpack verbosity repos globalFlags unpackFlags userTargets = do
         error "Distribution.Client.Unpack.unpack: the impossible happened."
 
   where
-    resolverParams sourcePkgDb pkgSpecifiers =
+    resolverParams availableDb pkgSpecifiers =
         --TODO: add commandline constraint and preference args for unpack
 
-        standardInstallPolicy mempty sourcePkgDb pkgSpecifiers
+        standardInstallPolicy mempty availableDb pkgSpecifiers
 
     prefix = fromFlagOrDefault "" (unpackDestDir unpackFlags)
 

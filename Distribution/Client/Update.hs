@@ -15,12 +15,12 @@ module Distribution.Client.Update
     ) where
 
 import Distribution.Client.Types
-         ( Repo(..), RemoteRepo(..), LocalRepo(..), SourcePackageDb(..) )
+         ( Repo(..), RemoteRepo(..), LocalRepo(..), AvailablePackageDb(..) )
 import Distribution.Client.FetchUtils
          ( downloadIndex )
 import qualified Distribution.Client.PackageIndex as PackageIndex
 import Distribution.Client.IndexUtils
-         ( getSourcePackages, updateRepoIndexCache )
+         ( getAvailablePackages )
 import qualified Paths_cabal_install_bundle
          ( version )
 
@@ -60,18 +60,17 @@ updateRepo verbosity repo = case repoKind repo of
     writeFileAtomic (dropExtension indexPath) . BS.Char8.unpack
                                               . maybeDecompress
                                             =<< BS.readFile indexPath
-    updateRepoIndexCache verbosity repo
 
 checkForSelfUpgrade :: Verbosity -> [Repo] -> IO ()
 checkForSelfUpgrade verbosity repos = do
-  SourcePackageDb sourcePkgIndex prefs <- getSourcePackages verbosity repos
+  AvailablePackageDb available prefs <- getAvailablePackages verbosity repos
 
   let self = PackageName "cabal-install"
       preferredVersionRange  = fromMaybe anyVersion (Map.lookup self prefs)
       currentVersion         = Paths_cabal_install_bundle.version
       laterPreferredVersions =
         [ packageVersion pkg
-        | pkg <- PackageIndex.lookupPackageName sourcePkgIndex self
+        | pkg <- PackageIndex.lookupPackageName available self
         , let version = packageVersion pkg
         , version > currentVersion
         , version `withinRange` preferredVersionRange ]
@@ -80,4 +79,3 @@ checkForSelfUpgrade verbosity repos = do
     notice verbosity $
          "Note: there is a new version of cabal-install available.\n"
       ++ "To upgrade, run: cabal install cabal-install"
-

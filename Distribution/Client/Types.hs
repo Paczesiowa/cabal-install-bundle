@@ -18,10 +18,7 @@ import Distribution.Package
 import Distribution.InstalledPackageInfo
          ( InstalledPackageInfo )
 import Distribution.PackageDescription
-         ( Benchmark(..), GenericPackageDescription(..), FlagAssignment
-         , TestSuite(..) )
-import Distribution.PackageDescription.Configuration
-         ( mapTreeData )
+         ( GenericPackageDescription, FlagAssignment )
 import Distribution.Client.PackageIndex
          ( PackageIndex )
 import Distribution.Version
@@ -37,8 +34,8 @@ newtype Password = Password { unPassword :: String }
 
 -- | This is the information we get from a @00-index.tar.gz@ hackage index.
 --
-data SourcePackageDb = SourcePackageDb {
-  packageIndex       :: PackageIndex SourcePackage,
+data AvailablePackageDb = AvailablePackageDb {
+  packageIndex       :: PackageIndex AvailablePackage,
   packagePreferences :: Map PackageName VersionRange
 }
 
@@ -75,51 +72,31 @@ instance PackageFixedDeps InstalledPackage where
 -- final configure process will be independent of the environment.
 --
 data ConfiguredPackage = ConfiguredPackage
-       SourcePackage       -- package info, including repo
+       AvailablePackage    -- package info, including repo
        FlagAssignment      -- complete flag assignment for the package
-       [OptionalStanza]    -- list of enabled optional stanzas for the package
        [PackageId]         -- set of exact dependencies. These must be
                            -- consistent with the 'buildDepends' in the
-                           -- 'PackageDescription' that you'd get by applying
-                           -- the flag assignment and optional stanzas.
+                           -- 'PackageDescrption' that you'd get by applying
+                           -- the flag assignment.
   deriving Show
 
 instance Package ConfiguredPackage where
-  packageId (ConfiguredPackage pkg _ _ _) = packageId pkg
+  packageId (ConfiguredPackage pkg _ _) = packageId pkg
 
 instance PackageFixedDeps ConfiguredPackage where
-  depends (ConfiguredPackage _ _ _ deps) = deps
+  depends (ConfiguredPackage _ _ deps) = deps
 
 
--- | A package description along with the location of the package sources.
---
-data SourcePackage = SourcePackage {
+-- | We re-use @GenericPackageDescription@ and use the @package-url@
+-- field to store the tarball URI.
+data AvailablePackage = AvailablePackage {
     packageInfoId      :: PackageId,
     packageDescription :: GenericPackageDescription,
     packageSource      :: PackageLocation (Maybe FilePath)
   }
   deriving Show
 
-instance Package SourcePackage where packageId = packageInfoId
-
-data OptionalStanza
-    = TestStanzas
-    | BenchStanzas
-  deriving (Eq, Ord, Show)
-
-enableStanzas
-    :: [OptionalStanza]
-    -> GenericPackageDescription
-    -> GenericPackageDescription
-enableStanzas stanzas gpkg = gpkg
-    { condBenchmarks = flagBenchmarks $ condBenchmarks gpkg
-    , condTestSuites = flagTests $ condTestSuites gpkg
-    }
-  where
-    enableTest t = t { testEnabled = TestStanzas `elem` stanzas }
-    enableBenchmark bm = bm { benchmarkEnabled = BenchStanzas `elem` stanzas }
-    flagBenchmarks = map (\(n, bm) -> (n, mapTreeData enableBenchmark bm))
-    flagTests = map (\(n, t) -> (n, mapTreeData enableTest t))
+instance Package AvailablePackage where packageId = packageInfoId
 
 -- ------------------------------------------------------------
 -- * Package locations and repositories
@@ -179,9 +156,8 @@ data BuildFailure = DependentFailed PackageId
                   | UnpackFailed    SomeException
                   | ConfigureFailed SomeException
                   | BuildFailed     SomeException
-                  | TestsFailed     SomeException
                   | InstallFailed   SomeException
 data BuildSuccess = BuildOk         DocsResult TestsResult
 
 data DocsResult  = DocsNotTried  | DocsFailed  | DocsOk
-data TestsResult = TestsNotTried | TestsOk
+data TestsResult = TestsNotTried | TestsFailed | TestsOk

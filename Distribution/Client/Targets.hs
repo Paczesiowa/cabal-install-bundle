@@ -37,11 +37,6 @@ module Distribution.Client.Targets (
   disambiguatePackageTargets,
   disambiguatePackageName,
 
-  -- * User constraints
-  UserConstraint(..),
-  readUserConstraint,
-  userToPackageConstraint
-
   ) where
 
 import Distribution.Package
@@ -49,7 +44,7 @@ import Distribution.Package
          , PackageIdentifier(..), packageName, packageVersion
          , Dependency(Dependency) )
 import Distribution.Client.Types
-         ( SourcePackage(..), PackageLocation(..), OptionalStanza(..) )
+         ( AvailablePackage(..), PackageLocation(..) )
 import Distribution.Client.Dependency.Types
          ( PackageConstraint(..) )
 
@@ -60,14 +55,17 @@ import qualified Distribution.Client.Tar as Tar
 import Distribution.Client.FetchUtils
 
 import Distribution.PackageDescription
-         ( GenericPackageDescription, FlagName(..), FlagAssignment )
+         ( GenericPackageDescription )
 import Distribution.PackageDescription.Parse
          ( readPackageDescription, parsePackageDescription, ParseResult(..) )
+import Distribution.Simple.Setup
+         ( fromFlag )
+import Distribution.Client.Setup
+         ( GlobalFlags(..) )
 import Distribution.Version
-         ( Version(Version), thisVersion, anyVersion, isAnyVersion
-         , VersionRange )
+         ( Version(Version), thisVersion, anyVersion, isAnyVersion )
 import Distribution.Text
-         ( Text(..), display )
+         ( Text(parse), display )
 import Distribution.Verbosity (Verbosity)
 import Distribution.Simple.Utils
          ( die, warn, intercalate, findPackageDesc, fromUTF8, lowercase )
@@ -86,13 +84,9 @@ import qualified Data.ByteString.Lazy.Char8 as BS.Char8
 import qualified Distribution.Client.GZipUtils as GZipUtils
 import Control.Monad (liftM)
 import qualified Distribution.Compat.ReadP as Parse
-import Distribution.Compat.ReadP
-         ( (+++), (<++) )
-import qualified Text.PrettyPrint as Disp
-import Text.PrettyPrint
-         ( (<>), (<+>) )
+         ( ReadP, readP_to_S, (+++) )
 import Data.Char
-         ( isSpace, isAlphaNum )
+         ( isSpace )
 import System.FilePath
          ( takeExtension, dropExtension, takeDirectory, splitPath )
 import System.Directory
@@ -186,7 +180,7 @@ pkgSpecifierConstraints :: Package pkg
                         => PackageSpecifier pkg -> [PackageConstraint]
 pkgSpecifierConstraints (NamedPackage _ constraints) = constraints
 pkgSpecifierConstraints (SpecificSourcePackage pkg)  =
-  [PackageConstraintVersion (packageName pkg)
+  [PackageVersionConstraint (packageName pkg)
                             (thisVersion (packageVersion pkg))]
 
 
@@ -275,17 +269,16 @@ readUserTarget targetstr =
                       && takeExtension (dropExtension f) == ".tar"
 
     parseDependencyOrPackageId :: Parse.ReadP r Dependency
-    parseDependencyOrPackageId = parse
-                             +++ liftM pkgidToDependency parse
+    parseDependencyOrPackageId = parse Parse.+++ liftM pkgidToDependency parse
       where
         pkgidToDependency :: PackageIdentifier -> Dependency
         pkgidToDependency p = case packageVersion p of
           Version [] _ -> Dependency (packageName p) anyVersion
           version      -> Dependency (packageName p) (thisVersion version)
 
-readPToMaybe :: Parse.ReadP a a -> String -> Maybe a
-readPToMaybe p str = listToMaybe [ r | (r,s) <- Parse.readP_to_S p str
-                                     , all isSpace s ]
+    readPToMaybe :: Parse.ReadP a a -> String -> Maybe a
+    readPToMaybe p str = listToMaybe [ r | (r,s) <- Parse.readP_to_S p str
+                                         , all isSpace s ]
 
 
 reportUserTargetProblems :: [UserTargetProblem] -> IO ()
@@ -348,17 +341,17 @@ reportUserTargetProblems problems = do
 --
 resolveUserTargets :: Package pkg
                    => Verbosity
-                   -> FilePath
+                   -> GlobalFlags
                    -> PackageIndex pkg
                    -> [UserTarget]
-                   -> IO [PackageSpecifier SourcePackage]
-resolveUserTargets verbosity worldFile available userTargets = do
+                   -> IO [PackageSpecifier AvailablePackage]
+resolveUserTargets verbosity globalFlags available userTargets = do
 
     -- given the user targets, get a list of fully or partially resolved
     -- package references
     packageTargets <- mapM (readPackageTarget verbosity)
                   =<< mapM (fetchPackageTarget verbosity) . concat
-                  =<< mapM (expandUserTarget worldFile) userTargets
+                  =<< mapM (expandUserTarget globalFlags) userTargets
 
     -- users are allowed to give package names case-insensitively, so we must
     -- disambiguate named package references
@@ -398,13 +391,13 @@ data PackageTarget pkg =
 -- | Given a user-specified target, expand it to a bunch of package targets
 -- (each of which refers to only one package).
 --
-expandUserTarget :: FilePath
+expandUserTarget :: GlobalFlags
                  -> UserTarget
                  -> IO [PackageTarget (PackageLocation ())]
-expandUserTarget worldFile userTarget = case userTarget of
+expandUserTarget globalFlags userTarget = case userTarget of
 
     UserTargetNamed (Dependency name vrange) ->
-      let constraints = [ PackageConstraintVersion name vrange
+      let constraints = [ PackageVersionConstraint name vrange
                         | not (isAnyVersion vrange) ]
       in  return [PackageTargetNamedFuzzy name constraints userTarget]
 
@@ -413,9 +406,9 @@ expandUserTarget worldFile userTarget = case userTarget of
       --TODO: should we warn if there are no world targets?
       return [ PackageTargetNamed name constraints userTarget
              | World.WorldPkgInfo (Dependency name vrange) flags <- worldPkgs
-             , let constraints = [ PackageConstraintVersion name vrange
+             , let constraints = [ PackageVersionConstraint name vrange
                                  | not (isAnyVersion vrange) ]
-                              ++ [ PackageConstraintFlags name flags
+                              ++ [ PackageFlagsConstraint name flags
                                  | not (null flags) ] ]
 
     UserTargetLocalDir dir ->
@@ -431,6 +424,8 @@ expandUserTarget worldFile userTarget = case userTarget of
 
     UserTargetRemoteTarball tarballURL ->
       return [ PackageTargetLocation (RemoteTarballPackage tarballURL ()) ]
+  where
+    worldFile = fromFlag $ globalWorldFile globalFlags
 
 
 -- ------------------------------------------------------------
@@ -457,7 +452,7 @@ fetchPackageTarget verbosity target = case target of
 --
 readPackageTarget :: Verbosity
                   -> PackageTarget (PackageLocation FilePath)
-                  -> IO (PackageTarget SourcePackage)
+                  -> IO (PackageTarget AvailablePackage)
 readPackageTarget verbosity target = case target of
 
     PackageTargetNamed pkgname constraints userTarget ->
@@ -471,7 +466,7 @@ readPackageTarget verbosity target = case target of
       LocalUnpackedPackage dir -> do
         pkg <- readPackageDescription verbosity =<< findPackageDesc dir
         return $ PackageTargetLocation $
-                   SourcePackage {
+                   AvailablePackage {
                      packageInfoId      = packageId pkg,
                      packageDescription = pkg,
                      packageSource      = fmap Just location
@@ -496,7 +491,7 @@ readPackageTarget verbosity target = case target of
                        ++ filename ++ " in " ++ tarballFile
         Just pkg ->
           return $ PackageTargetLocation $
-                     SourcePackage {
+                     AvailablePackage {
                        packageInfoId      = packageId pkg,
                        packageDescription = pkg,
                        packageSource      = fmap Just location
@@ -557,14 +552,14 @@ disambiguatePackageTargets :: Package pkg'
                            -> [PackageTarget pkg]
                            -> ( [PackageTargetProblem]
                               , [PackageSpecifier pkg] )
-disambiguatePackageTargets availablePkgIndex availableExtra targets =
+disambiguatePackageTargets available availableExtra targets =
     partitionEithers (map disambiguatePackageTarget targets)
   where
     disambiguatePackageTarget packageTarget = case packageTarget of
       PackageTargetLocation pkg -> Right (SpecificSourcePackage pkg)
 
       PackageTargetNamed pkgname constraints userTarget
-        | null (PackageIndex.lookupPackageName availablePkgIndex pkgname)
+        | null (PackageIndex.lookupPackageName available pkgname)
                     -> Left (PackageNameUnknown pkgname userTarget)
         | otherwise -> Right (NamedPackage pkgname constraints)
 
@@ -574,13 +569,11 @@ disambiguatePackageTargets availablePkgIndex availableExtra targets =
                                           pkgname userTarget)
           Ambiguous   pkgnames -> Left  (PackageNameAmbigious
                                           pkgname pkgnames userTarget)
-          Unambiguous pkgname' -> Right (NamedPackage pkgname' constraints')
-            where
-              constraints' = map (renamePackageConstraint pkgname') constraints
+          Unambiguous pkgname' -> Right (NamedPackage pkgname' constraints)
 
     -- use any extra specific available packages to help us disambiguate
     packageNameEnv :: PackageNameEnv
-    packageNameEnv = mappend (indexPackageNameEnv availablePkgIndex)
+    packageNameEnv = mappend (indexPackageNameEnv available)
                              (extraPackageNameEnv availableExtra)
 
 
@@ -612,7 +605,7 @@ reportPackageTargetProblems verbosity problems = do
                  "The following 'world' packages will be ignored because "
               ++ "they refer to packages that cannot be found: "
               ++ intercalate ", " (map display pkgs) ++ "\n"
-              ++ "You can suppress this warning by correcting the world file."
+              ++ "You can surpress this warning by correcting the world file."
   where
     isUserTagetWorld UserTargetWorld = True; isUserTagetWorld _ = False
 
@@ -649,10 +642,10 @@ instance Monoid PackageNameEnv where
     PackageNameEnv (\name -> lookupA name ++ lookupB name)
 
 indexPackageNameEnv :: Package pkg => PackageIndex pkg -> PackageNameEnv
-indexPackageNameEnv pkgIndex = PackageNameEnv pkgNameLookup
+indexPackageNameEnv index = PackageNameEnv pkgNameLookup
   where
     pkgNameLookup (PackageName name) =
-      map fst (PackageIndex.searchByName pkgIndex name)
+      map fst (PackageIndex.searchByName index name)
 
 extraPackageNameEnv :: [PackageName] -> PackageNameEnv
 extraPackageNameEnv names = PackageNameEnv pkgNameLookup
@@ -662,99 +655,3 @@ extraPackageNameEnv names = PackageNameEnv pkgNameLookup
       | let lname = lowercase name
       , PackageName name' <- names
       , lowercase name' == lname ]
-
-
--- ------------------------------------------------------------
--- * Package constraints
--- ------------------------------------------------------------
-
-data UserConstraint =
-     UserConstraintVersion   PackageName VersionRange
-   | UserConstraintInstalled PackageName
-   | UserConstraintSource    PackageName
-   | UserConstraintFlags     PackageName FlagAssignment
-   | UserConstraintStanzas   PackageName [OptionalStanza]
-  deriving (Show,Eq)
-
-
-userToPackageConstraint :: UserConstraint -> PackageConstraint
--- At the moment, the types happen to be directly equivalent
-userToPackageConstraint uc = case uc of
-  UserConstraintVersion   name ver   -> PackageConstraintVersion    name ver
-  UserConstraintInstalled name       -> PackageConstraintInstalled  name
-  UserConstraintSource    name       -> PackageConstraintSource     name
-  UserConstraintFlags     name flags -> PackageConstraintFlags      name flags
-  UserConstraintStanzas   name stanzas -> PackageConstraintStanzas  name stanzas
-
-renamePackageConstraint :: PackageName -> PackageConstraint -> PackageConstraint
-renamePackageConstraint name pc = case pc of
-  PackageConstraintVersion   _ ver   -> PackageConstraintVersion    name ver
-  PackageConstraintInstalled _       -> PackageConstraintInstalled  name
-  PackageConstraintSource    _       -> PackageConstraintSource     name
-  PackageConstraintFlags     _ flags -> PackageConstraintFlags      name flags
-  PackageConstraintStanzas   _ stanzas -> PackageConstraintStanzas   name stanzas
-
-readUserConstraint :: String -> Either String UserConstraint
-readUserConstraint str =
-    case readPToMaybe parse str of
-      Nothing -> Left msgCannotParse
-      Just c  -> Right c
-  where
-    msgCannotParse =
-         "expected a package name followed by a constraint, which is "
-      ++ "either a version range, 'installed', 'source' or flags"
-
---FIXME: use Text instance for FlagName and FlagAssignment
-instance Text UserConstraint where
-  disp (UserConstraintVersion   pkgname verrange) = disp pkgname <+> disp verrange
-  disp (UserConstraintInstalled pkgname)          = disp pkgname <+> Disp.text "installed"
-  disp (UserConstraintSource    pkgname)          = disp pkgname <+> Disp.text "source"
-  disp (UserConstraintFlags     pkgname flags)    = disp pkgname <+> dispFlagAssignment flags
-    where
-      dispFlagAssignment = Disp.hsep . map dispFlagValue
-      dispFlagValue (f, True)   = Disp.char '+' <> dispFlagName f
-      dispFlagValue (f, False)  = Disp.char '-' <> dispFlagName f
-      dispFlagName (FlagName f) = Disp.text f
-
-  disp (UserConstraintStanzas   pkgname stanzas)  = disp pkgname <+> dispStanzas stanzas
-    where
-      dispStanzas = Disp.hsep . map dispStanza
-      dispStanza TestStanzas  = Disp.text "test"
-      dispStanza BenchStanzas = Disp.text "bench"
-
-  parse = parse >>= parseConstraint
-    where
-      spaces = Parse.satisfy isSpace >> Parse.skipSpaces
-
-      parseConstraint pkgname =
-            (parse >>= return . UserConstraintVersion pkgname)
-        +++ (do spaces
-                _ <- Parse.string "installed"
-                return (UserConstraintInstalled pkgname))
-        +++ (do spaces
-                _ <- Parse.string "source"
-                return (UserConstraintSource pkgname))
-        +++ (do spaces
-                _ <- Parse.string "test"
-                return (UserConstraintStanzas pkgname [TestStanzas]))
-        +++ (do spaces
-                _ <- Parse.string "bench"
-                return (UserConstraintStanzas pkgname [BenchStanzas]))
-        <++ (parseFlagAssignment >>= (return . UserConstraintFlags pkgname))
-
-      parseFlagAssignment = Parse.many1 (spaces >> parseFlagValue)
-      parseFlagValue =
-            (do Parse.optional (Parse.char '+')
-                f <- parseFlagName
-                return (f, True))
-        +++ (do _ <- Parse.char '-'
-                f <- parseFlagName
-                return (f, False))
-      parseFlagName = liftM FlagName ident
-
-      ident :: Parse.ReadP r String
-      ident = Parse.munch1 identChar >>= \s -> check s >> return s
-        where
-          identChar c   = isAlphaNum c || c == '_' || c == '-'
-          check ('-':_) = Parse.pfail
-          check _       = return ()

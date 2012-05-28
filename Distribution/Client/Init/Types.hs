@@ -18,7 +18,6 @@ import Distribution.Simple.Setup
   ( Flag(..) )
 
 import Distribution.Version
-import Distribution.Verbosity
 import qualified Distribution.Package as P
 import Distribution.License
 import Distribution.ModuleName
@@ -60,8 +59,6 @@ data InitFlags =
               , dependencies :: Maybe [P.Dependency]
               , sourceDirs   :: Maybe [String]
               , buildTools   :: Maybe [String]
-
-              , initVerbosity :: Flag Verbosity
               }
   deriving (Show)
 
@@ -94,7 +91,6 @@ instance Monoid InitFlags where
     , dependencies   = mempty
     , sourceDirs     = mempty
     , buildTools     = mempty
-    , initVerbosity  = mempty
     }
   mappend  a b = InitFlags
     { nonInteractive = combine nonInteractive
@@ -117,7 +113,6 @@ instance Monoid InitFlags where
     , dependencies   = combine dependencies
     , sourceDirs     = combine sourceDirs
     , buildTools     = combine buildTools
-    , initVerbosity  = combine initVerbosity
     }
     where combine field = field a `mappend` field b
 

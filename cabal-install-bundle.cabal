@@ -1,5 +1,5 @@
 Name:               cabal-install-bundle
-Version:            0.14.0
+Version:            0.10.2
 Synopsis:           The (bundled) command-line interface for Cabal and Hackage.
 Maintainer:         paczesiowa@gmail.com
 Category:           Distribution
@@ -17,7 +17,7 @@ extra-source-files:
   cbits/winSockErr.c
   cbits/crc32.h cbits/inffast.h cbits/inflate.h
   cbits/trees.h cbits/deflate.h cbits/inffixed.h
-  cbits/inftrees.h cbits/zutil.h  
+  cbits/inftrees.h cbits/zutil.h
 
 Executable cabal
     Main-Is:            Main.hs
@@ -33,7 +33,7 @@ Executable cabal
         Codec.Compression.Zlib,
         Codec.Compression.Zlib.Raw,
         Codec.Compression.Zlib.Internal
-        Codec.Compression.Zlib.Stream    
+        Codec.Compression.Zlib.Stream
         Control.Monad.Cont
         Control.Monad.Cont.Class
         Control.Monad.Error
@@ -78,7 +78,7 @@ Executable cabal
         Data.Functor.Constant
         Data.Functor.Identity
         Data.Functor.Product
-        Data.Functor.Reverse        
+        Data.Functor.Reverse
         Text.Parsec,
         Text.Parsec.String,
         Text.Parsec.ByteString,
@@ -103,7 +103,7 @@ Executable cabal
         Text.ParserCombinators.Parsec.Perm,
         Text.ParserCombinators.Parsec.Pos,
         Text.ParserCombinators.Parsec.Prim,
-        Text.ParserCombinators.Parsec.Token    
+        Text.ParserCombinators.Parsec.Token
         Network
         Network.BSD
         Network.Socket
@@ -118,7 +118,7 @@ Executable cabal
         Network.Stream,
         Network.StreamDebugger,
         Network.StreamSocket,
-        Network.TCP,                
+        Network.TCP,
         Network.HTTP,
         Network.HTTP.Headers,
         Network.HTTP.Base,

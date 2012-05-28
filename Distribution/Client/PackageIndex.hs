@@ -27,8 +27,6 @@ module Distribution.Client.PackageIndex (
   -- * Queries
 
   -- ** Precise lookups
-  elemByPackageId,
-  elemByPackageName,
   lookupPackageName,
   lookupPackageId,
   lookupDependency,
@@ -63,7 +61,7 @@ import qualified Data.Array as Array
 import Data.Array ((!))
 import Data.List (groupBy, sortBy, nub, isInfixOf)
 import Data.Monoid (Monoid(..))
-import Data.Maybe (isJust, isNothing, fromMaybe)
+import Data.Maybe (isNothing, fromMaybe)
 
 import Distribution.Package
          ( PackageName(..), PackageIdentifier(..)
@@ -78,7 +76,7 @@ import Distribution.Simple.Utils (lowercase, equating, comparing)
 --
 -- It can be searched effeciently by package name and version.
 --
-newtype PackageIndex pkg = PackageIndex
+newtype Package pkg => PackageIndex pkg = PackageIndex
   -- This index package names to all the package records matching that package
   -- name case-sensitively. It includes all versions.
   --
@@ -237,13 +235,6 @@ allPackagesByName (PackageIndex m) = Map.elems m
 --
 -- * Lookups
 --
-
-elemByPackageId :: Package pkg => PackageIndex pkg -> PackageIdentifier -> Bool
-elemByPackageId index = isJust . lookupPackageId index
-
-elemByPackageName :: Package pkg => PackageIndex pkg -> PackageName -> Bool
-elemByPackageName index = not . null . lookupPackageName index
-
 
 -- | Does a lookup by package id (name & version).
 --

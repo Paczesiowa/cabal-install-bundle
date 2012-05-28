@@ -45,8 +45,9 @@ module Distribution.Client.InstallPlan (
   ) where
 
 import Distribution.Client.Types
-         ( SourcePackage(packageDescription), ConfiguredPackage(..)
-         , InstalledPackage, BuildFailure, BuildSuccess, enableStanzas )
+         ( AvailablePackage(packageDescription), ConfiguredPackage(..)
+         , InstalledPackage
+         , BuildFailure, BuildSuccess )
 import Distribution.Package
          ( PackageIdentifier(..), PackageName(..), Package(..), packageName
          , PackageFixedDeps(..), Dependency(..) )
@@ -87,32 +88,32 @@ import Control.Exception
 --
 -- The Problem:
 --
--- In general we start with a set of installed packages and a set of source
+-- In general we start with a set of installed packages and a set of available
 -- packages.
 --
 -- Installed packages have fixed dependencies. They have already been built and
 -- we know exactly what packages they were built against, including their exact
--- versions.
+-- versions. 
 --
--- Source package have somewhat flexible dependencies. They are specified as
+-- Available package have somewhat flexible dependencies. They are specified as
 -- version ranges, though really they're predicates. To make matters worse they
 -- have conditional flexible dependencies. Configuration flags can affect which
 -- packages are required and can place additional constraints on their
 -- versions.
 --
 -- These two sets of package can and usually do overlap. There can be installed
--- packages that are also available as source packages which means they could
--- be re-installed if required, though there will also be packages which are
--- not available as source and cannot be re-installed. Very often there will be
--- extra versions available than are installed. Sometimes we may like to prefer
--- installed packages over source ones or perhaps always prefer the latest
--- available version whether installed or not.
+-- packages that are also available which means they could be re-installed if
+-- required, though there will also be packages which are not available and
+-- cannot be re-installed. Very often there will be extra versions available
+-- than are installed. Sometimes we may like to prefer installed packages over
+-- available ones or perhaps always prefer the latest available version whether
+-- installed or not.
 --
 -- The goal is to calculate an installation plan that is closed, acyclic and
 -- consistent and where every configured package is valid.
 --
 -- An installation plan is a set of packages that are going to be used
--- together. It will consist of a mixture of installed packages and source
+-- together. It will consist of a mixture of installed packages and available
 -- packages along with their exact version dependencies. An installation plan
 -- is closed if for every package in the set, all of its dependencies are
 -- also in the set. It is consistent if for every package in the set, all
@@ -471,7 +472,7 @@ showPackageProblem (InvalidDep dep pkgid) =
 configuredPackageProblems :: Platform -> CompilerId
                           -> ConfiguredPackage -> [PackageProblem]
 configuredPackageProblems platform comp
-  (ConfiguredPackage pkg specifiedFlags stanzas specifiedDeps) =
+  (ConfiguredPackage pkg specifiedFlags specifiedDeps) =
      [ DuplicateFlag flag | ((flag,_):_) <- duplicates specifiedFlags ]
   ++ [ MissingFlag flag | OnlyInLeft  flag <- mergedFlags ]
   ++ [ ExtraFlag   flag | OnlyInRight flag <- mergedFlags ]
@@ -505,6 +506,6 @@ configuredPackageProblems platform comp
          (const True)
          platform comp
          []
-         (enableStanzas stanzas $ packageDescription pkg) of
+         (packageDescription pkg) of
         Right (resolvedPkg, _) -> externalBuildDepends resolvedPkg
         Left  _ -> error "configuredPackageInvalidDeps internal error"

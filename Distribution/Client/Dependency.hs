@@ -14,7 +14,6 @@
 -----------------------------------------------------------------------------
 module Distribution.Client.Dependency (
     -- * The main package dependency resolver
-    chooseSolver,
     resolveDependencies,
     Progress(..),
     foldProgress,
@@ -43,56 +42,43 @@ module Distribution.Client.Dependency (
     addConstraints,
     addPreferences,
     setPreferenceDefault,
-    setReorderGoals,
-    setIndependentGoals,
-    setAvoidReinstalls,
-    setShadowPkgs,
-    setMaxBackjumps,
-    addSourcePackages,
-    hideInstalledPackagesSpecificByInstalledPackageId,
-    hideInstalledPackagesSpecificBySourcePackageId,
+    addAvailablePackages,
+    hideInstalledPackagesSpecific,
     hideInstalledPackagesAllVersions,
   ) where
 
-import Distribution.Client.Dependency.TopDown
-         ( topDownResolver )
-import Distribution.Client.Dependency.Modular
-         ( modularResolver, SolverConfig(..) )
+import Distribution.Client.Dependency.TopDown (topDownResolver)
 import qualified Distribution.Client.PackageIndex as PackageIndex
-import qualified Distribution.Simple.PackageIndex as InstalledPackageIndex
+import Distribution.Client.PackageIndex (PackageIndex)
 import qualified Distribution.Client.InstallPlan as InstallPlan
 import Distribution.Client.InstallPlan (InstallPlan)
 import Distribution.Client.Types
-         ( SourcePackageDb(SourcePackageDb)
-         , SourcePackage(..) )
+         ( AvailablePackageDb(AvailablePackageDb)
+         , AvailablePackage(..), InstalledPackage )
 import Distribution.Client.Dependency.Types
-         ( PreSolver(..), Solver(..), DependencyResolver, PackageConstraint(..)
+         ( DependencyResolver, PackageConstraint(..)
          , PackagePreferences(..), InstalledPreference(..)
-         , PackagesPreferenceDefault(..)
          , Progress(..), foldProgress )
 import Distribution.Client.Targets
-import qualified Distribution.InstalledPackageInfo as Installed
 import Distribution.Package
          ( PackageName(..), PackageId, Package(..), packageVersion
-         , InstalledPackageId, Dependency(Dependency))
+         , Dependency(Dependency))
 import Distribution.Version
-         ( Version(..), VersionRange, anyVersion, withinRange, simplifyVersionRange )
+         ( VersionRange, anyVersion, withinRange, simplifyVersionRange )
 import Distribution.Compiler
-         ( CompilerId(..), CompilerFlavor(..) )
+         ( CompilerId(..) )
 import Distribution.System
          ( Platform )
-import Distribution.Simple.Utils
-         ( comparing, warn, info )
+import Distribution.Simple.Utils (comparing)
 import Distribution.Text
          ( display )
-import Distribution.Verbosity
-         ( Verbosity )
 
 import Data.List (maximumBy, foldl')
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.Set (Set)
+
 
 -- ------------------------------------------------------------
 -- * High level planner policy
@@ -107,14 +93,34 @@ data DepResolverParams = DepResolverParams {
        depResolverConstraints       :: [PackageConstraint],
        depResolverPreferences       :: [PackagePreference],
        depResolverPreferenceDefault :: PackagesPreferenceDefault,
-       depResolverInstalledPkgIndex :: InstalledPackageIndex.PackageIndex,
-       depResolverSourcePkgIndex    :: PackageIndex.PackageIndex SourcePackage,
-       depResolverReorderGoals      :: Bool,
-       depResolverIndependentGoals  :: Bool,
-       depResolverAvoidReinstalls   :: Bool,
-       depResolverShadowPkgs        :: Bool,
-       depResolverMaxBackjumps      :: Maybe Int
+       depResolverInstalled         :: PackageIndex InstalledPackage,
+       depResolverAvailable         :: PackageIndex AvailablePackage
      }
+
+
+-- | Global policy for all packages to say if we prefer package versions that
+-- are already installed locally or if we just prefer the latest available.
+--
+data PackagesPreferenceDefault =
+
+     -- | Always prefer the latest version irrespective of any existing
+     -- installed version.
+     --
+     -- * This is the standard policy for upgrade.
+     --
+     PreferAllLatest
+
+     -- | Always prefer the installed versions over ones that would need to be
+     -- installed. Secondarily, prefer latest versions (eg the latest installed
+     -- version or if there are none then the latest available version).
+   | PreferAllInstalled
+
+     -- | Prefer the latest version for packages that are explicitly requested
+     -- but prefers the installed version for any other packages.
+     --
+     -- * This is the standard policy for install.
+     --
+   | PreferLatestForSelected
 
 
 -- | A package selection preference for a particular package.
@@ -131,22 +137,17 @@ data PackagePreference =
      -- | If we prefer versions of packages that are already installed.
    | PackageInstalledPreference PackageName InstalledPreference
 
-basicDepResolverParams :: InstalledPackageIndex.PackageIndex
-                       -> PackageIndex.PackageIndex SourcePackage
+basicDepResolverParams :: PackageIndex InstalledPackage
+                       -> PackageIndex AvailablePackage
                        -> DepResolverParams
-basicDepResolverParams installedPkgIndex sourcePkgIndex =
+basicDepResolverParams installed available =
     DepResolverParams {
        depResolverTargets           = [],
        depResolverConstraints       = [],
        depResolverPreferences       = [],
        depResolverPreferenceDefault = PreferLatestForSelected,
-       depResolverInstalledPkgIndex = installedPkgIndex,
-       depResolverSourcePkgIndex    = sourcePkgIndex,
-       depResolverReorderGoals      = False,
-       depResolverIndependentGoals  = False,
-       depResolverAvoidReinstalls   = False,
-       depResolverShadowPkgs        = False,
-       depResolverMaxBackjumps      = Nothing
+       depResolverInstalled         = installed,
+       depResolverAvailable         = available
      }
 
 addTargets :: [PackageName]
@@ -179,42 +180,12 @@ setPreferenceDefault preferenceDefault params =
       depResolverPreferenceDefault = preferenceDefault
     }
 
-setReorderGoals :: Bool -> DepResolverParams -> DepResolverParams
-setReorderGoals b params =
-    params {
-      depResolverReorderGoals = b
-    }
-
-setIndependentGoals :: Bool -> DepResolverParams -> DepResolverParams
-setIndependentGoals b params =
-    params {
-      depResolverIndependentGoals = b
-    }
-
-setAvoidReinstalls :: Bool -> DepResolverParams -> DepResolverParams
-setAvoidReinstalls b params =
-    params {
-      depResolverAvoidReinstalls = b
-    }
-
-setShadowPkgs :: Bool -> DepResolverParams -> DepResolverParams
-setShadowPkgs b params =
-    params {
-      depResolverShadowPkgs = b
-    }
-
-setMaxBackjumps :: Maybe Int -> DepResolverParams -> DepResolverParams
-setMaxBackjumps n params =
-    params {
-      depResolverMaxBackjumps = n
-    }
-
 dontUpgradeBasePackage :: DepResolverParams -> DepResolverParams
 dontUpgradeBasePackage params =
     addConstraints extraConstraints params
   where
     extraConstraints =
-      [ PackageConstraintInstalled pkgname
+      [ PackageInstalledConstraint pkgname
       | all (/=PackageName "base") (depResolverTargets params)
       , pkgname <-  [ PackageName "base", PackageName "ghc-prim" ]
       , isInstalled pkgname ]
@@ -222,36 +193,23 @@ dontUpgradeBasePackage params =
     -- below when there are no targets and thus no dep on base.
     -- Need to refactor contraints separate from needing packages.
     isInstalled = not . null
-                . InstalledPackageIndex.lookupPackageName
-                                 (depResolverInstalledPkgIndex params)
+                . PackageIndex.lookupPackageName (depResolverInstalled params)
 
-addSourcePackages :: [SourcePackage]
-                  -> DepResolverParams -> DepResolverParams
-addSourcePackages pkgs params =
+addAvailablePackages :: [AvailablePackage]
+                     -> DepResolverParams -> DepResolverParams
+addAvailablePackages pkgs params =
     params {
-      depResolverSourcePkgIndex =
-        foldl (flip PackageIndex.insert)
-              (depResolverSourcePkgIndex params) pkgs
+      depResolverAvailable = foldl (flip PackageIndex.insert)
+                                   (depResolverAvailable params) pkgs
     }
 
-hideInstalledPackagesSpecificByInstalledPackageId :: [InstalledPackageId]
-                                                     -> DepResolverParams -> DepResolverParams
-hideInstalledPackagesSpecificByInstalledPackageId pkgids params =
+hideInstalledPackagesSpecific :: [PackageId]
+                              -> DepResolverParams -> DepResolverParams
+hideInstalledPackagesSpecific pkgids params =
     --TODO: this should work using exclude constraints instead
     params {
-      depResolverInstalledPkgIndex =
-        foldl' (flip InstalledPackageIndex.deleteInstalledPackageId)
-               (depResolverInstalledPkgIndex params) pkgids
-    }
-
-hideInstalledPackagesSpecificBySourcePackageId :: [PackageId]
-                                                  -> DepResolverParams -> DepResolverParams
-hideInstalledPackagesSpecificBySourcePackageId pkgids params =
-    --TODO: this should work using exclude constraints instead
-    params {
-      depResolverInstalledPkgIndex =
-        foldl' (flip InstalledPackageIndex.deleteSourcePackageId)
-               (depResolverInstalledPkgIndex params) pkgids
+      depResolverInstalled = foldl' (flip PackageIndex.deletePackageId)
+                                    (depResolverInstalled params) pkgids
     }
 
 hideInstalledPackagesAllVersions :: [PackageName]
@@ -259,22 +217,21 @@ hideInstalledPackagesAllVersions :: [PackageName]
 hideInstalledPackagesAllVersions pkgnames params =
     --TODO: this should work using exclude constraints instead
     params {
-      depResolverInstalledPkgIndex =
-        foldl' (flip InstalledPackageIndex.deletePackageName)
-               (depResolverInstalledPkgIndex params) pkgnames
+      depResolverInstalled =
+        foldl' (flip PackageIndex.deletePackageName)
+               (depResolverInstalled params) pkgnames
     }
 
 
 hideBrokenInstalledPackages :: DepResolverParams -> DepResolverParams
 hideBrokenInstalledPackages params =
-    hideInstalledPackagesSpecificByInstalledPackageId pkgids params
+    hideInstalledPackagesSpecific pkgids params
   where
-    pkgids = map Installed.installedPackageId
-           . InstalledPackageIndex.reverseDependencyClosure
-                            (depResolverInstalledPkgIndex params)
-           . map (Installed.installedPackageId . fst)
-           . InstalledPackageIndex.brokenPackages
-           $ depResolverInstalledPkgIndex params
+    pkgids = map packageId
+           . PackageIndex.reverseDependencyClosure (depResolverInstalled params)
+           . map (packageId . fst)
+           . PackageIndex.brokenPackages
+           $ depResolverInstalled params
 
 
 upgradeDependencies :: DepResolverParams -> DepResolverParams
@@ -286,17 +243,16 @@ reinstallTargets params =
     hideInstalledPackagesAllVersions (depResolverTargets params) params
 
 
-standardInstallPolicy :: InstalledPackageIndex.PackageIndex
-                      -> SourcePackageDb
-                      -> [PackageSpecifier SourcePackage]
+standardInstallPolicy :: PackageIndex InstalledPackage
+                      -> AvailablePackageDb
+                      -> [PackageSpecifier AvailablePackage]
                       -> DepResolverParams
 standardInstallPolicy
-    installedPkgIndex (SourcePackageDb sourcePkgIndex sourcePkgPrefs)
-    pkgSpecifiers
+    installed (AvailablePackageDb available availablePrefs) pkgSpecifiers
 
   = addPreferences
       [ PackageVersionPreference name ver
-      | (name, ver) <- Map.toList sourcePkgPrefs ]
+      | (name, ver) <- Map.toList availablePrefs ]
 
   . addConstraints
       (concatMap pkgSpecifierConstraints pkgSpecifiers)
@@ -304,34 +260,22 @@ standardInstallPolicy
   . addTargets
       (map pkgSpecifierTarget pkgSpecifiers)
 
-  . hideInstalledPackagesSpecificBySourcePackageId
+  . hideInstalledPackagesSpecific
       [ packageId pkg | SpecificSourcePackage pkg <- pkgSpecifiers ]
 
-  . addSourcePackages
+  . addAvailablePackages
       [ pkg  | SpecificSourcePackage pkg <- pkgSpecifiers ]
 
   $ basicDepResolverParams
-      installedPkgIndex sourcePkgIndex
+      installed available
 
 
 -- ------------------------------------------------------------
 -- * Interface to the standard resolver
 -- ------------------------------------------------------------
 
-chooseSolver :: Verbosity -> PreSolver -> CompilerId -> IO Solver
-chooseSolver _         AlwaysTopDown _                = return TopDown
-chooseSolver _         AlwaysModular _                = return Modular
-chooseSolver verbosity Choose        (CompilerId f v) = do
-  let chosenSolver | f == GHC && v <= Version [7] [] = TopDown
-                   | otherwise                       = Modular
-      msg TopDown = warn verbosity "Falling back to topdown solver for GHC < 7."
-      msg Modular = info verbosity "Choosing modular solver."
-  msg chosenSolver
-  return chosenSolver
-
-runSolver :: Solver -> SolverConfig -> DependencyResolver
-runSolver TopDown = const topDownResolver -- TODO: warn about unsuported options
-runSolver Modular = modularResolver
+defaultResolver :: DependencyResolver
+defaultResolver = topDownResolver
 
 -- | Run the dependency solver.
 --
@@ -341,40 +285,26 @@ runSolver Modular = modularResolver
 --
 resolveDependencies :: Platform
                     -> CompilerId
-                    -> Solver
                     -> DepResolverParams
                     -> Progress String String InstallPlan
 
     --TODO: is this needed here? see dontUpgradeBasePackage
-resolveDependencies platform comp _solver params
+resolveDependencies platform comp params
   | null (depResolverTargets params)
   = return (mkInstallPlan platform comp [])
 
-resolveDependencies platform comp  solver params =
+resolveDependencies platform comp params =
 
     fmap (mkInstallPlan platform comp)
-  $ runSolver solver (SolverConfig reorderGoals indGoals noReinstalls shadowing maxBkjumps)
-                     platform comp installedPkgIndex sourcePkgIndex
-                     preferences constraints targets
+  $ defaultResolver platform comp installed available
+                    preferences constraints targets
   where
     DepResolverParams
       targets constraints
       prefs defpref
-      installedPkgIndex
-      sourcePkgIndex
-      reorderGoals
-      indGoals
-      noReinstalls
-      shadowing
-      maxBkjumps      = dontUpgradeBasePackage
-                      -- TODO:
-                      -- The modular solver can properly deal with broken packages
-                      -- and won't select them. So the 'hideBrokenInstalledPackages'
-                      -- function should be moved into a module that is specific
-                      -- to the Topdown solver.
-                      . (if solver /= Modular then hideBrokenInstalledPackages
-                                              else id)
-                      $ params
+      installed available = dontUpgradeBasePackage
+                          . hideBrokenInstalledPackages
+                          $ params
 
     preferences = interpretPackagesPreference
                     (Set.fromList targets) defpref prefs
@@ -386,8 +316,8 @@ resolveDependencies platform comp  solver params =
 mkInstallPlan :: Platform
               -> CompilerId
               -> [InstallPlan.PlanPackage] -> InstallPlan
-mkInstallPlan platform comp pkgIndex =
-  case InstallPlan.new platform comp (PackageIndex.fromList pkgIndex) of
+mkInstallPlan platform comp pkgs =
+  case InstallPlan.new platform comp (PackageIndex.fromList pkgs) of
     Right plan     -> plan
     Left  problems -> error $ unlines $
         "internal error: could not construct a valid install plan."
@@ -445,13 +375,12 @@ interpretPackagesPreference selected defaultPref prefs =
 -- It simply means preferences for installed packages will be ignored.
 --
 resolveWithoutDependencies :: DepResolverParams
-                           -> Either [ResolveNoDepsError] [SourcePackage]
+                           -> Either [ResolveNoDepsError] [AvailablePackage]
 resolveWithoutDependencies (DepResolverParams targets constraints
-                              prefs defpref installedPkgIndex sourcePkgIndex
-                              _reorderGoals _indGoals _avoidReinstalls _shadowing _maxBjumps) =
+                                prefs defpref installed available) =
     collectEithers (map selectPackage targets)
   where
-    selectPackage :: PackageName -> Either ResolveNoDepsError SourcePackage
+    selectPackage :: PackageName -> Either ResolveNoDepsError AvailablePackage
     selectPackage pkgname
       | null choices = Left  $! ResolveUnsatisfiable pkgname requiredVersions
       | otherwise    = Right $! maximumBy bestByPrefs choices
@@ -460,8 +389,7 @@ resolveWithoutDependencies (DepResolverParams targets constraints
         -- Constraints
         requiredVersions = packageConstraints pkgname
         pkgDependency    = Dependency pkgname requiredVersions
-        choices          = PackageIndex.lookupDependency sourcePkgIndex
-                                                         pkgDependency
+        choices          = PackageIndex.lookupDependency available pkgDependency
 
         -- Preferences
         PackagePreferences preferredVersions preferInstalled
@@ -471,8 +399,7 @@ resolveWithoutDependencies (DepResolverParams targets constraints
                           (installPref pkg, versionPref pkg, packageVersion pkg)
         installPref   = case preferInstalled of
           PreferLatest    -> const False
-          PreferInstalled -> not . null . InstalledPackageIndex.lookupSourcePackageId
-                                                     installedPkgIndex
+          PreferInstalled -> isJust . PackageIndex.lookupPackageId installed
                            . packageId
         versionPref   pkg = packageVersion pkg `withinRange` preferredVersions
 
@@ -481,7 +408,7 @@ resolveWithoutDependencies (DepResolverParams targets constraints
       Map.findWithDefault anyVersion pkgname packageVersionConstraintMap
     packageVersionConstraintMap =
       Map.fromList [ (name, range)
-                   | PackageConstraintVersion name range <- constraints ]
+                   | PackageVersionConstraint name range <- constraints ]
 
     packagePreferences :: PackageName -> PackagePreferences
     packagePreferences = interpretPackagesPreference

@@ -29,8 +29,10 @@ type BuildReportId = URI
 type BuildLog = String
 
 uploadReports :: URI -> [(BuildReport, Maybe BuildLog)]
+              -> BrowserAction (HandleStream String) ()
               ->  BrowserAction (HandleStream BuildLog) ()
-uploadReports uri reports = do
+uploadReports uri reports auth = do
+  auth
   forM_ reports $ \(report, mbBuildLog) -> do
      buildId <- postBuildReport uri report
      case mbBuildLog of

@@ -4,7 +4,7 @@
 module Distribution.Client.Upload (check, upload, report) where
 
 import Distribution.Client.Types (Username(..), Password(..),Repo(..),RemoteRepo(..))
-import Distribution.Client.HttpUtils (isOldHackageURI, cabalBrowse)
+import Distribution.Client.HttpUtils (proxy, isOldHackageURI)
 
 import Distribution.Simple.Utils (debug, notice, warn, info)
 import Distribution.Verbosity (Verbosity)
@@ -15,8 +15,9 @@ import qualified Distribution.Client.BuildReports.Anonymous as BuildReport
 import qualified Distribution.Client.BuildReports.Upload as BuildReport
 
 import Network.Browser
-         ( BrowserAction, request
-         , Authority(..), addAuthority )
+         ( BrowserAction, browse, request
+         , Authority(..), addAuthority, setAuthorityGen
+         , setOutHandler, setErrHandler, setProxy )
 import Network.HTTP
          ( Header(..), HeaderName(..), findHeader
          , Request(..), RequestMethod(..), Response(..) )
@@ -32,7 +33,7 @@ import System.Random    (randomRIO)
 import System.FilePath  ((</>), takeExtension, takeFileName)
 import qualified System.FilePath.Posix as FilePath.Posix (combine)
 import System.Directory
-import Control.Monad (forM_, when)
+import Control.Monad (forM_)
 
 
 --FIXME: how do we find this path for an arbitrary hackage server?
@@ -97,19 +98,16 @@ report verbosity repos mUsername mPassword = do
         Left remoteRepo
             -> do dotCabal <- defaultCabalDir
                   let srcDir = dotCabal </> "reports" </> remoteRepoName remoteRepo
-                  -- We don't want to bomb out just because we haven't built any packages from this repo yet
-                  srcExists <- doesDirectoryExist srcDir
-                  when srcExists $ do
-                    contents <- getDirectoryContents srcDir
-                    forM_ (filter (\c -> takeExtension c == ".log") contents) $ \logFile ->
-                        do inp <- readFile (srcDir </> logFile)
-                           let (reportStr, buildLog) = read inp :: (String,String)
-                           case BuildReport.parse reportStr of
-                             Left errs -> do warn verbosity $ "Errors: " ++ errs -- FIXME
-                             Right report' ->
-                                 do info verbosity $ "Uploading report for " ++ display (BuildReport.package report')
-                                    cabalBrowse verbosity auth $ BuildReport.uploadReports (remoteRepoURI remoteRepo) [(report', Just buildLog)]
-                                    return ()
+                  contents <- getDirectoryContents srcDir
+                  forM_ (filter (\c -> takeExtension c == ".log") contents) $ \logFile ->
+                      do inp <- readFile (srcDir </> logFile)
+                         let (reportStr, buildLog) = read inp :: (String,String)
+                         case BuildReport.parse reportStr of
+                           Left errs -> do warn verbosity $ "Errors: " ++ errs -- FIXME
+                           Right report' ->
+                               do info verbosity $ "Uploading report for " ++ display (BuildReport.package report')
+                                  browse $ BuildReport.uploadReports (remoteRepoURI remoteRepo) [(report', Just buildLog)] auth
+                                  return ()
         Right{} -> return ()
   where
     targetRepoURI = remoteRepoURI $ last [ remoteRepo | Left remoteRepo <- map repoKind repos ] --FIXME: better error message when no repos are given
@@ -124,8 +122,15 @@ handlePackage :: Verbosity -> URI -> BrowserAction (HandleStream String) ()
               -> FilePath -> IO ()
 handlePackage verbosity uri auth path =
   do req <- mkRequest uri path
+     p   <- proxy verbosity
      debug verbosity $ "\n" ++ show req
-     (_,resp) <- cabalBrowse verbosity auth $ request req
+     (_,resp) <- browse $ do
+                   setProxy p
+                   setErrHandler (warn verbosity . ("http error: "++))
+                   setOutHandler (debug verbosity)
+                   auth
+                   setAuthorityGen (\_ _ -> return Nothing)
+                   request req
      debug verbosity $ show resp
      case rspCode resp of
        (2,0,0) -> do notice verbosity "Ok"

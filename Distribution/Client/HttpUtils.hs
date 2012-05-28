@@ -1,11 +1,10 @@
 {-# OPTIONS -cpp #-}
 -----------------------------------------------------------------------------
--- | Separate module for HTTP actions, using a proxy server if one exists 
+-- | Separate module for HTTP actions, using a proxy server if one exists
 -----------------------------------------------------------------------------
 module Distribution.Client.HttpUtils (
     downloadURI,
     getHTTP,
-    cabalBrowse,
     proxy,
     isOldHackageURI
   ) where
@@ -18,10 +17,10 @@ import Network.URI
 import Network.Stream
          ( Result, ConnError(..) )
 import Network.Browser
-         ( Proxy (..), Authority (..), BrowserAction, browse
-         , setOutHandler, setErrHandler, setProxy, setAuthorityGen, request)
+         ( Proxy (..), Authority (..), browse
+         , setOutHandler, setErrHandler, setProxy, request)
 import Control.Monad
-         ( mplus, join, liftM, liftM2 )
+         ( mplus, join, liftM2 )
 import qualified Data.ByteString.Lazy.Char8 as ByteString
 import Data.ByteString.Lazy (ByteString)
 #ifdef WIN32
@@ -64,7 +63,7 @@ registryProxyString = handleIO (\_ -> return Nothing) $
         then fmap Just $ regQueryValue hkey (Just "ProxyServer")
         else return Nothing
   where
-    -- some sources say proxy settings should be at 
+    -- some sources say proxy settings should be at
     -- HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows
     --                   \CurrentVersion\Internet Settings\ProxyServer
     -- but if the user sets them with IE connection panel they seem to
@@ -88,7 +87,7 @@ envProxyString = do
 proxyString = liftM2 mplus envProxyString registryProxyString
 
 
--- |Get the local proxy settings  
+-- |Get the local proxy settings
 proxy :: Verbosity -> IO Proxy
 proxy verbosity = do
   mstr <- proxyString
@@ -152,22 +151,15 @@ mkRequest uri = Request{ rqURI     = uri
 
 -- |Carry out a GET request, using the local proxy settings
 getHTTP :: Verbosity -> URI -> IO (Result (Response ByteString))
-getHTTP verbosity uri = liftM (\(_, resp) -> Right resp) $
-                              cabalBrowse verbosity (return ()) (request (mkRequest uri))
-
-cabalBrowse :: Verbosity
-            -> BrowserAction s ()
-            -> BrowserAction s a
-            -> IO a
-cabalBrowse verbosity auth act = do
-    p   <- proxy verbosity
-    browse $ do
-        setProxy p
-        setErrHandler (warn verbosity . ("http error: "++))
-        setOutHandler (debug verbosity)
-        auth
-        setAuthorityGen (\_ _ -> return Nothing)
-        act
+getHTTP verbosity uri = do
+                 p   <- proxy verbosity
+                 let req = mkRequest uri
+                 (_, resp) <- browse $ do
+                                setErrHandler (warn verbosity . ("http error: "++))
+                                setOutHandler (debug verbosity)
+                                setProxy p
+                                request req
+                 return (Right resp)
 
 downloadURI :: Verbosity
             -> URI      -- ^ What to download
