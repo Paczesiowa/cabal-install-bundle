@@ -1,0 +1,20 @@
+This project IS cabal-install, with all its [hackage-]dependencies inlined
+into one, bundled package, that only depends on libraries provided by GHC.
+
+The only reason for this package is easier bootstrapping.
+You probably shouldn't use it.
+
+This package contains no original code, it's just a big merge
+from cabal-install and its dependant libraries.
+
+Licenses (all BSD3) and authors are provided in the original packages (on hackage).
+
+List of packages:
+cabal-install-0.14.0
+network-2.3.0.13
+parsec-3.1.2
+mtl-2.1.1
+transformers-0.3.0.0
+zlib-0.5.3.3
+http-4000.2.3
+random-1.0.1.1
