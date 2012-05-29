@@ -196,7 +196,7 @@ Executable cabal
         Distribution.Compat.FilePerms
         Paths_cabal_install_bundle
 
-    build-depends: base >= 2 && < 99, Cabal, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
+    build-depends: base >= 2 && < 99, Cabal >= 1.14, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
 
     extensions: CPP, DeriveDataTypeable, ForeignFunctionInterface, TypeSynonymInstances, ExistentialQuantification, PolymorphicComponents, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DeriveDataTypeable, FunctionalDependencies
 
