@@ -1,6 +1,8 @@
 Name:               cabal-install-bundle
 Version:            0.10.2
 Synopsis:           The (bundled) command-line interface for Cabal and Hackage.
+Description:        This is cabal-install with bundled dependencies. Easier to bootstrap.
+License:            BSD3
 Maintainer:         paczesiowa@gmail.com
 Category:           Distribution
 build-type:         Configure
@@ -194,6 +196,10 @@ Executable cabal
         Distribution.Compat.FilePerms
         Paths_cabal_install_bundle
 
-    build-depends: base, Cabal, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
+    build-depends: base >= 2 && < 99, Cabal, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
 
     extensions: CPP, DeriveDataTypeable, ForeignFunctionInterface, TypeSynonymInstances, ExistentialQuantification, PolymorphicComponents, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DeriveDataTypeable, FunctionalDependencies
+
+source-repository head
+   type:     git
+   location: git://github.com/Paczesiowa/cabal-install-bundle.git
