@@ -1,5 +1,5 @@
 Name:               cabal-install-bundle
-Version:            0.10.2
+Version:            0.10.2.1
 Synopsis:           The (bundled) command-line interface for Cabal and Hackage.
 Description:        This is cabal-install with bundled dependencies. Easier to bootstrap.
 License:            BSD3
