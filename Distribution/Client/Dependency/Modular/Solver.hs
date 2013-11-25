@@ -39,11 +39,13 @@ solve sc idx userPrefs userConstraints userGoals =
   buildPhase
   where
     explorePhase     = exploreTreeLog . backjump
-    heuristicsPhase  = if preferEasyGoalChoices sc
+    heuristicsPhase  = P.firstGoal . -- after doing goal-choice heuristics, commit to the first choice (saves space)
+                       if preferEasyGoalChoices sc
                          then P.preferBaseGoalChoice . P.deferDefaultFlagChoices . P.lpreferEasyGoalChoices
                          else P.preferBaseGoalChoice
     preferencesPhase = P.preferPackagePreferences userPrefs
-    validationPhase  = P.enforcePackageConstraints userConstraints .
+    validationPhase  = P.enforceManualFlags . -- can only be done after user constraints
+                       P.enforcePackageConstraints userConstraints .
                        validateTree idx
     prunePhase       = (if avoidReinstalls sc then P.avoidReinstalls (const True) else id) .
                        -- packages that can never be "upgraded":

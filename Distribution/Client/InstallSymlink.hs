@@ -67,9 +67,10 @@ import System.Directory
 import System.FilePath
          ( (</>), splitPath, joinPath, isAbsolute )
 
-import Prelude hiding (catch, ioError)
+import Prelude hiding (ioError)
 import System.IO.Error
-         ( catch, isDoesNotExistError, ioError )
+         ( isDoesNotExistError, ioError )
+import Distribution.Compat.Exception ( catchIO )
 import Control.Exception
          ( assert )
 import Data.Maybe
@@ -132,7 +133,7 @@ symlinkBinaries configFlags installFlags plan =
       , PackageDescription.buildable (PackageDescription.buildInfo exe) ]
 
     pkgDescription :: ConfiguredPackage -> PackageDescription
-    pkgDescription (ConfiguredPackage (SourcePackage _ pkg _) flags stanzas _) =
+    pkgDescription (ConfiguredPackage (SourcePackage _ pkg _ _) flags stanzas _) =
       case finalizePackageDescription flags
              (const True)
              platform compilerId [] (enableStanzas stanzas pkg) of
@@ -209,7 +210,7 @@ targetOkToOverwrite symlink target = handleNotExist $ do
               else return NotOurFile
 
   where
-    handleNotExist action = catch action $ \ioexception ->
+    handleNotExist action = catchIO action $ \ioexception ->
       -- If the target doesn't exist then there's no problem overwriting it!
       if isDoesNotExistError ioexception
         then return NotExists

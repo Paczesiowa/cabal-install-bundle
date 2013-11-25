@@ -1,5 +1,5 @@
 Name:               cabal-install-bundle
-Version:            0.14.0
+Version:            0.16.0.2
 Synopsis:           The (bundled) command-line interface for Cabal and Hackage.
 Description:        This is cabal-install with bundled dependencies. Easier to bootstrap.
 License:            BSD3
@@ -16,7 +16,7 @@ extra-source-files:
   include/HsNetworkConfig.h.in include/HsNet.h
   -- C sources only used on some systems
   cbits/ancilData.c cbits/asyncAccept.c cbits/initWinSock.c
-  cbits/winSockErr.c
+  cbits/winSockErr.c cbits/getnumcores.c
   cbits/crc32.h cbits/inffast.h cbits/inflate.h
   cbits/trees.h cbits/deflate.h cbits/inffixed.h
   cbits/inftrees.h cbits/zutil.h
@@ -196,7 +196,7 @@ Executable cabal
         Distribution.Compat.FilePerms
         Paths_cabal_install_bundle
 
-    build-depends: base >= 2 && < 99, Cabal >= 1.14, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
+    build-depends: base >= 2 && < 99, Cabal >= 1.16, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
 
     extensions: CPP, DeriveDataTypeable, ForeignFunctionInterface, TypeSynonymInstances, ExistentialQuantification, PolymorphicComponents, MultiParamTypeClasses, FlexibleInstances, FlexibleContexts, DeriveDataTypeable, FunctionalDependencies
 

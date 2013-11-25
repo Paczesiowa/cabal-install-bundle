@@ -43,6 +43,7 @@ import Network.HTTP.Utils ( trim, readsOne )
 
 import Data.Char (toLower)
 import Data.Maybe (fromMaybe)
+import Control.Exception (onException)
 import Control.Monad (when)
 
 -----------------------------------------------------------------
@@ -88,8 +89,8 @@ sendHTTP_notify :: HStream ty
 		-> IO (Result (Response ty))
 sendHTTP_notify conn rq onSendComplete = do
   when providedClose $ (closeOnEnd conn True)
-  catchIO (sendMain conn rq onSendComplete)
-          (\e -> do { close conn; ioError e })
+  onException (sendMain conn rq onSendComplete)
+              (close conn)
  where
   providedClose = findConnClose (rqHeaders rq)
 
@@ -112,9 +113,11 @@ sendMain conn rqst onSendComplete = do
       --let str = if null (rqBody rqst)
       --              then show rqst
       --              else show (insertHeader HdrExpect "100-continue" rqst)
-  writeBlock conn (buf_fromStr bufferOps $ show rqst)
+  -- TODO review throwing away of result
+  _ <- writeBlock conn (buf_fromStr bufferOps $ show rqst)
     -- write body immediately, don't wait for 100 CONTINUE
-  writeBlock conn (rqBody rqst)
+  -- TODO review throwing away of result
+  _ <- writeBlock conn (rqBody rqst)
   onSendComplete
   rsp <- getResponseHead conn
   switchResponse conn True False rsp rqst
@@ -150,7 +153,8 @@ switchResponse conn allow_retry bdy_sent (Right (cd,rn,hdrs)) rqst =
      Retry -> do {- Request with "Expect" header failed.
                     Trouble is the request contains Expects
                     other than "100-Continue" -}
-        writeBlock conn ((buf_append bufferOps)
+        -- TODO review throwing away of result
+        _ <- writeBlock conn ((buf_append bufferOps)
 		                     (buf_fromStr bufferOps (show rqst))
 			             (rqBody rqst))
         rsp <- getResponseHead conn
@@ -228,9 +232,11 @@ receiveHTTP conn = getRequestHead >>= either (return . Left) processRequest
 -- server interactions, performing the dual role to 'sendHTTP'.
 respondHTTP :: HStream ty => HandleStream ty -> Response ty -> IO ()
 respondHTTP conn rsp = do 
-  writeBlock conn (buf_fromStr bufferOps $ show rsp)
+  -- TODO: review throwing away of result
+  _ <- writeBlock conn (buf_fromStr bufferOps $ show rsp)
    -- write body immediately, don't wait for 100 CONTINUE
-  writeBlock conn (rspBody rsp)
+  -- TODO: review throwing away of result
+  _ <- writeBlock conn (rspBody rsp)
   return ()
 
 ------------------------------------------------------------------------------

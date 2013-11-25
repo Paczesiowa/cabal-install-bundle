@@ -21,6 +21,7 @@ module Network.HTTP.Proxy
 
 import Control.Monad ( when, mplus, join, liftM2)
 
+import Network.HTTP.Base ( catchIO )
 import Network.HTTP.Utils ( dropWhileTail, chopAtDelim )
 import Network.HTTP.Auth
 import Network.URI
@@ -85,7 +86,7 @@ registryProxyLoc = (hive, path)
 
 -- read proxy settings from the windows registry; this is just a best
 -- effort and may not work on all setups. 
-registryProxyString = Prelude.catch
+registryProxyString = catchIO
   (bracket (uncurry regOpenKey registryProxyLoc) regCloseKey $ \hkey -> do
     enable <- fmap toBool $ regQueryValueDWORD hkey "ProxyEnable"
     if enable
@@ -163,7 +164,9 @@ uri2proxy _ = Nothing
 #if defined(WIN32)
 regQueryValueDWORD :: HKEY -> String -> IO DWORD
 regQueryValueDWORD hkey name = alloca $ \ptr -> do
-  regQueryValueEx hkey name (castPtr ptr) (sizeOf (undefined :: DWORD))
+  -- TODO: this throws away the key type returned by regQueryValueEx
+  -- we should check it's what we expect instead
+  _ <- regQueryValueEx hkey name (castPtr ptr) (sizeOf (undefined :: DWORD))
   peek ptr
 
 #endif

@@ -62,7 +62,7 @@ import Distribution.Version
 import Distribution.Package
          ( PackageIdentifier, packageName, packageVersion, Dependency(..) )
 import Distribution.Text
-         ( Text(parse), display )
+         ( Text(..), display )
 import Distribution.ReadE
          ( ReadE(..), readP_to_E, succeedReadE )
 import qualified Distribution.Compat.ReadP as Parse
@@ -475,13 +475,15 @@ instance Monoid ReportFlags where
 
 data UnpackFlags = UnpackFlags {
       unpackDestDir :: Flag FilePath,
-      unpackVerbosity :: Flag Verbosity
+      unpackVerbosity :: Flag Verbosity,
+      unpackPristine :: Flag Bool
     }
 
 defaultUnpackFlags :: UnpackFlags
 defaultUnpackFlags = UnpackFlags {
     unpackDestDir = mempty,
-    unpackVerbosity = toFlag normal
+    unpackVerbosity = toFlag normal,
+    unpackPristine  = toFlag False
    }
 
 unpackCommand :: CommandUI UnpackFlags
@@ -498,14 +500,21 @@ unpackCommand = CommandUI {
          "where to unpack the packages, defaults to the current directory."
          unpackDestDir (\v flags -> flags { unpackDestDir = v })
          (reqArgFlag "PATH")
+
+       , option [] ["pristine"]
+           ("Unpack the original pristine tarball, rather than updating the "
+           ++ ".cabal file with the latest revision from the package archive.")
+           unpackPristine (\v flags -> flags { unpackPristine = v })
+           trueArg
        ]
   }
 
 instance Monoid UnpackFlags where
   mempty = defaultUnpackFlags
   mappend a b = UnpackFlags {
-     unpackDestDir = combine unpackDestDir
-    ,unpackVerbosity = combine unpackVerbosity
+    unpackDestDir   = combine unpackDestDir,
+    unpackVerbosity = combine unpackVerbosity,
+    unpackPristine  = combine unpackPristine
   }
     where combine field = field a `mappend` field b
 
@@ -615,7 +624,8 @@ data InstallFlags = InstallFlags {
     installLogFile          :: Flag PathTemplate,
     installBuildReports     :: Flag ReportLevel,
     installSymlinkBinDir    :: Flag FilePath,
-    installOneShot          :: Flag Bool
+    installOneShot          :: Flag Bool,
+    installNumJobs          :: Flag (Maybe Int)
   }
 
 defaultInstallFlags :: InstallFlags
@@ -638,7 +648,8 @@ defaultInstallFlags = InstallFlags {
     installLogFile         = mempty,
     installBuildReports    = Flag NoReports,
     installSymlinkBinDir   = mempty,
-    installOneShot         = Flag False
+    installOneShot         = Flag False,
+    installNumJobs         = mempty
   }
   where
     docIndexFile = toPathTemplate ("$datadir" </> "doc" </> "index.html")
@@ -786,6 +797,15 @@ installOptions showOrParseArgs =
           "Do not record the packages in the world file."
           installOneShot (\v flags -> flags { installOneShot = v })
           (yesNoOpt showOrParseArgs)
+
+      , option "j" ["jobs"]
+        "Run NUM jobs simultaneously."
+        installNumJobs (\v flags -> flags { installNumJobs = v })
+        (optArg "NUM" (readP_to_E (\_ -> "jobs should be a number")
+                                  (fmap (toFlag . Just)
+                                        (Parse.readS_to_P reads)))
+                      (Flag Nothing)
+                      (map (fmap show) . flagToList))
       ] ++ case showOrParseArgs of      -- TODO: remove when "cabal install" avoids
           ParseArgs ->
             option [] ["only"]
@@ -815,7 +835,8 @@ instance Monoid InstallFlags where
     installLogFile         = mempty,
     installBuildReports    = mempty,
     installSymlinkBinDir   = mempty,
-    installOneShot         = mempty
+    installOneShot         = mempty,
+    installNumJobs         = mempty
   }
   mappend a b = InstallFlags {
     installDocumentation   = combine installDocumentation,
@@ -836,7 +857,8 @@ instance Monoid InstallFlags where
     installLogFile         = combine installLogFile,
     installBuildReports    = combine installBuildReports,
     installSymlinkBinDir   = combine installSymlinkBinDir,
-    installOneShot         = combine installOneShot
+    installOneShot         = combine installOneShot,
+    installNumJobs         = combine installNumJobs
   }
     where combine field = field a `mappend` field b
 

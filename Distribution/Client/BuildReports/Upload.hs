@@ -1,4 +1,4 @@
-{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE CPP, PatternGuards #-}
 -- This is a quick hack for uploading build reports to Hackage.
 
 module Distribution.Client.BuildReports.Upload
@@ -61,7 +61,7 @@ putBuildLog :: BuildReportId -> BuildLog
             -> BrowserAction (HandleStream BuildLog) ()
 putBuildLog reportId buildLog = do
   --FIXME: do something if the request fails
-  (_, response) <- request Request {
+  (_, _response) <- request Request {
       rqURI     = reportId{uriPath = uriPath reportId </> "log"},
       rqMethod  = PUT,
       rqHeaders = [Header HdrContentType   ("text/plain"),

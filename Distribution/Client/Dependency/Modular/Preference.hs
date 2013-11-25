@@ -108,25 +108,42 @@ processPackageConstraintS _ _ _  _                             r = r
 enforcePackageConstraints :: M.Map PN [PackageConstraint] -> Tree QGoalReasons -> Tree QGoalReasons
 enforcePackageConstraints pcs = trav go
   where
-    go (PChoiceF qpn@(Q _ pn)               gr    ts) =
+    go (PChoiceF qpn@(Q _ pn)               gr      ts) =
       let c = toConflictSet (Goal (P qpn) gr)
           -- compose the transformation functions for each of the relevant constraint
           g = \ i -> foldl (\ h pc -> h . processPackageConstraintP   c i pc) id
                            (M.findWithDefault [] pn pcs)
-      in PChoiceF qpn gr    (P.mapWithKey g ts)
-    go (FChoiceF qfn@(FN (PI (Q _ pn) _) f) gr tr ts) =
+      in PChoiceF qpn gr      (P.mapWithKey g ts)
+    go (FChoiceF qfn@(FN (PI (Q _ pn) _) f) gr tr m ts) =
       let c = toConflictSet (Goal (F qfn) gr)
           -- compose the transformation functions for each of the relevant constraint
           g = \ b -> foldl (\ h pc -> h . processPackageConstraintF f c b pc) id
                            (M.findWithDefault [] pn pcs)
-      in FChoiceF qfn gr tr (P.mapWithKey g ts)
-    go (SChoiceF qsn@(SN (PI (Q _ pn) _) f) gr tr ts) =
+      in FChoiceF qfn gr tr m (P.mapWithKey g ts)
+    go (SChoiceF qsn@(SN (PI (Q _ pn) _) f) gr tr   ts) =
       let c = toConflictSet (Goal (S qsn) gr)
           -- compose the transformation functions for each of the relevant constraint
           g = \ b -> foldl (\ h pc -> h . processPackageConstraintS f c b pc) id
                            (M.findWithDefault [] pn pcs)
-      in SChoiceF qsn gr tr (P.mapWithKey g ts)
+      in SChoiceF qsn gr tr   (P.mapWithKey g ts)
     go x = x
+
+-- | Transformation that tries to enforce manual flags. Manual flags
+-- can only be re-set explicitly by the user. This transformation should
+-- be run after user preferences have been enforced. For manual flags,
+-- it disables all but the first non-disabled choice.
+enforceManualFlags :: Tree QGoalReasons -> Tree QGoalReasons
+enforceManualFlags = trav go
+  where
+    go (FChoiceF qfn gr tr True ts) = FChoiceF qfn gr tr True $
+      let c = toConflictSet (Goal (F qfn) gr)
+      in  case span isDisabled (P.toList ts) of
+            (_ , [])     -> P.fromList []
+            (xs, y : ys) -> P.fromList (xs ++ y : L.map (\ (b, _) -> (b, Fail c ManualFlag)) ys)
+      where
+        isDisabled (_, Fail _ _) = True
+        isDisabled _             = False
+    go x                                                   = x
 
 -- | Prefer installed packages over non-installed packages, generally.
 -- All installed packages or non-installed packages are treated as
@@ -232,9 +249,9 @@ deferDefaultFlagChoices = trav go
     go x                = x
 
     defer :: Tree a -> Tree a -> Ordering
-    defer (FChoice _ _ True _) _ = GT
-    defer _ (FChoice _ _ True _) = LT
-    defer _ _                    = EQ
+    defer (FChoice _ _ True _ _) _ = GT
+    defer _ (FChoice _ _ True _ _) = LT
+    defer _ _                      = EQ
 
 -- | Variant of 'preferEasyGoalChoices'.
 --

@@ -51,11 +51,11 @@ import Distribution.Text
 import Distribution.Verbosity
          ( Verbosity, lessVerbose )
 import Distribution.Simple.Utils
-         ( die, warn, info, fromUTF8, equating )
+         ( die, warn, info, fromUTF8 )
 
 import Data.Char   (isAlphaNum)
 import Data.Maybe  (catMaybes, fromMaybe)
-import Data.List   (isPrefixOf, groupBy)
+import Data.List   (isPrefixOf)
 import Data.Monoid (Monoid(..))
 import qualified Data.Map as Map
 import Control.Monad (MonadPlus(mplus), when, unless, liftM)
@@ -71,10 +71,10 @@ import System.FilePath.Posix as FilePath.Posix
 import System.IO
 import System.IO.Unsafe (unsafeInterleaveIO)
 import System.IO.Error (isDoesNotExistError)
+import Distribution.Compat.Exception (catchIO)
 import System.Directory
          ( getModificationTime, doesFileExist )
-import System.Time
-         ( getClockTime, diffClockTimes, normalizeTimeDiff, TimeDiff(tdDay) )
+import Distribution.Compat.Time
 
 
 getInstalledPackages :: Verbosity -> Compiler
@@ -88,15 +88,14 @@ getInstalledPackages verbosity comp packageDbs conf =
 
 convert :: InstalledPackageIndex.PackageIndex -> PackageIndex InstalledPackage
 convert index' = PackageIndex.fromList
-  -- There can be multiple installed instances of each package version,
-  -- like when the same package is installed in the global & user dbs.
-  -- InstalledPackageIndex.allPackagesByName gives us the installed
-  -- packages with the most preferred instances first, so by picking the
-  -- first we should get the user one. This is almost but not quite the
-  -- same as what ghc does.
-  [ InstalledPackage ipkg (sourceDeps index' ipkg)
-  | ipkgs <- InstalledPackageIndex.allPackagesByName index'
-  , (ipkg:_) <- groupBy (equating packageVersion) ipkgs ]
+    -- There can be multiple installed instances of each package version,
+    -- like when the same package is installed in the global & user dbs.
+    -- InstalledPackageIndex.allPackagesBySourcePackageId gives us the
+    -- installed packages with the most preferred instances first, so by
+    -- picking the first we should get the user one. This is almost but not
+    -- quite the same as what ghc does.
+    [ InstalledPackage ipkg (sourceDeps index' ipkg)
+    | (_,ipkg:_) <- InstalledPackageIndex.allPackagesBySourcePackageId index' ]
   where
     -- The InstalledPackageInfo only lists dependencies by the
     -- InstalledPackageId, which means we do not directly know the corresponding
@@ -170,14 +169,15 @@ readRepoIndex verbosity repo =
     readPackageIndexCacheFile mkAvailablePackage indexFile cacheFile
 
   where
-    mkAvailablePackage pkgid pkg =
+    mkAvailablePackage pkgid pkgtxt pkg =
       SourcePackage {
         packageInfoId      = pkgid,
         packageDescription = pkg,
-        packageSource      = RepoTarballPackage repo pkgid Nothing
+        packageSource      = RepoTarballPackage repo pkgid Nothing,
+        packageDescrOverride = Just pkgtxt
       }
 
-    handleNotFound action = catch action $ \e -> if isDoesNotExistError e
+    handleNotFound action = catchIO action $ \e -> if isDoesNotExistError e
       then do
         case repoKind repo of
           Left  remoteRepo -> warn verbosity $
@@ -191,13 +191,11 @@ readRepoIndex verbosity repo =
 
     isOldThreshold = 15 --days
     warnIfIndexIsOld indexFile = do
-      indexTime   <- getModificationTime indexFile
-      currentTime <- getClockTime
-      let diff = normalizeTimeDiff (diffClockTimes currentTime indexTime)
-      when (tdDay diff >= isOldThreshold) $ case repoKind repo of
+      dt <- getFileAge indexFile
+      when (dt >= isOldThreshold) $ case repoKind repo of
         Left  remoteRepo -> warn verbosity $
              "The package list for '" ++ remoteRepoName remoteRepo
-          ++ "' is " ++ show (tdDay diff)  ++ " days old.\nRun "
+          ++ "' is " ++ show dt ++ " days old.\nRun "
           ++ "'cabal update' to get the latest list of available packages."
         Right _localRepo -> return ()
 
@@ -338,11 +336,12 @@ updatePackageIndexCacheFile indexFile cacheFile = do
     writeFile cacheFile (showIndexCache cache)
   where
     mkCache pkgs prefs =
-        [ CachePrefrence pref          | pref <- prefs ]
+        [ CachePreference pref          | pref <- prefs ]
      ++ [ CachePackageId pkgid blockNo | (pkgid, _, blockNo) <- pkgs ]
 
 readPackageIndexCacheFile :: Package pkg
-                          => (PackageId -> GenericPackageDescription -> pkg)
+                          => (PackageId -> ByteString
+                                        -> GenericPackageDescription -> pkg)
                           -> FilePath
                           -> FilePath
                           -> IO (PackageIndex pkg, [Dependency])
@@ -353,7 +352,8 @@ readPackageIndexCacheFile mkPkg indexFile cacheFile = do
 
 
 packageIndexFromCache :: Package pkg
-                      => (PackageId -> GenericPackageDescription -> pkg)
+                      => (PackageId -> ByteString
+                                    -> GenericPackageDescription -> pkg)
                       -> Handle
                       -> [IndexCacheEntry]
                       -> IO (PackageIndex pkg, [Dependency])
@@ -371,20 +371,22 @@ packageIndexFromCache mkPkg hnd = accum mempty []
       -- The magic here is that we use lazy IO to read the .cabal file
       -- from the index tarball if it turns out that we need it.
       -- Most of the time we only need the package id.
-      pkg <- unsafeInterleaveIO $ do
-               getPackageDescription blockno
-      let srcpkg = mkPkg pkgid pkg
+      ~(pkg, pkgtxt) <- unsafeInterleaveIO $ do
+        pkgtxt <- getEntryContent blockno
+        pkg    <- readPackageDescription pkgtxt
+        return (pkg, pkgtxt)
+
+      let srcpkg = mkPkg pkgid pkgtxt pkg
       accum (srcpkg:srcpkgs) prefs entries
 
-    accum srcpkgs prefs (CachePrefrence pref : entries) =
+    accum srcpkgs prefs (CachePreference pref : entries) =
       accum srcpkgs (pref:prefs) entries
 
-    getPackageDescription blockno = do
+    getEntryContent blockno = do
       hSeek hnd AbsoluteSeek (fromIntegral (blockno * 512))
       header  <- BS.hGet hnd 512
       size    <- getEntrySize header
-      content <- BS.hGet hnd (fromIntegral size)
-      readPackageDescription content
+      BS.hGet hnd (fromIntegral size)
 
     getEntrySize header =
       case Tar.read header of
@@ -413,7 +415,7 @@ packageIndexFromCache mkPkg hnd = accum mempty []
 type BlockNo = Int
 
 data IndexCacheEntry = CachePackageId PackageId BlockNo
-                     | CachePrefrence Dependency
+                     | CachePreference Dependency
   deriving (Eq, Show)
 
 readIndexCacheEntry :: BSS.ByteString -> Maybe IndexCacheEntry
@@ -421,12 +423,13 @@ readIndexCacheEntry = \line ->
   case BSS.words line of
     [key, pkgnamestr, pkgverstr, sep, blocknostr]
       | key == packageKey && sep == blocknoKey ->
-      case (parseName pkgnamestr, parseVer pkgverstr [], parseBlockNo blocknostr) of
+      case (parseName pkgnamestr, parseVer pkgverstr [],
+            parseBlockNo blocknostr) of
         (Just pkgname, Just pkgver, Just blockno)
           -> Just (CachePackageId (PackageIdentifier pkgname pkgver) blockno)
         _ -> Nothing
     (key: remainder) | key == preferredVersionKey ->
-      fmap CachePrefrence (simpleParse (BSS.unpack (BSS.unwords remainder)))
+      fmap CachePreference (simpleParse (BSS.unpack (BSS.unwords remainder)))
     _  -> Nothing
   where
     packageKey = BSS.pack "pkg:"
@@ -456,7 +459,7 @@ showIndexCacheEntry entry = case entry of
    CachePackageId pkgid b -> "pkg: " ++ display (packageName pkgid)
                                   ++ " " ++ display (packageVersion pkgid)
                           ++ " b# " ++ show b
-   CachePrefrence dep     -> "pref-ver: " ++ display dep
+   CachePreference dep     -> "pref-ver: " ++ display dep
 
 readIndexCache :: BSS.ByteString -> [IndexCacheEntry]
 readIndexCache = catMaybes . map readIndexCacheEntry . BSS.lines

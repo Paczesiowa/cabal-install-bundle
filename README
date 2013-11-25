@@ -13,8 +13,8 @@ List of packages:
 cabal-install-0.14.0
 network-2.3.0.13
 parsec-3.1.2
-mtl-2.1.1
+mtl-2.1.2
 transformers-0.3.0.0
 zlib-0.5.3.3
-http-4000.2.3
+http-4000.2.4
 random-1.0.1.1

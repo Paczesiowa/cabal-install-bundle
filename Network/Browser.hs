@@ -495,7 +495,7 @@ ioAction = liftIO
 setErrHandler :: (String -> IO ()) -> BrowserAction t ()
 setErrHandler h = modify (\b -> b { bsErr=h })
 
--- | @setErrHandler@ sets the IO action to call when
+-- | @setOutHandler@ sets the IO action to call when
 -- the browser chatters info on its running. To disable any
 -- such, set it to @const (return ())@.
 setOutHandler :: (String -> IO ()) -> BrowserAction t ()
@@ -809,7 +809,9 @@ request' nullVal rqState rq = do
    case e_rsp of
     Left v 
      | (reqRetries rqState < fromMaybe defaultMaxErrorRetries mbMx) && 
-       (v == ErrorReset || v == ErrorClosed) ->
+       (v == ErrorReset || v == ErrorClosed) -> do
+       --empty connnection pool in case connection has become invalid
+       modify (\b -> b { bsConnectionPool=[] })       
        request' nullVal rqState{reqRetries=succ (reqRetries rqState)} rq
      | otherwise -> 
        return (Left v)

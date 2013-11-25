@@ -87,8 +87,7 @@ import Distribution.Compat.FilePerms
          ( setFileExecutable )
 import System.Posix.Types
          ( FileMode )
-import System.Time
-         ( ClockTime(..) )
+import Distribution.Compat.Time
 import System.IO
          ( IOMode(ReadMode), openBinaryFile, hFileSize )
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -119,8 +118,6 @@ extractTarGzFile dir expected tar = do
 --
 
 type FileSize  = Int64
--- | The number of seconds since the UNIX epoch
-type EpochTime = Int64
 type DevMajor  = Int
 type DevMinor  = Int
 type TypeCode  = Char
@@ -264,12 +261,12 @@ directoryEntry name = simpleEntry name Directory
 -- * Tar paths
 --
 
--- | The classic tar format allowed just 100 charcters for the file name. The
+-- | The classic tar format allowed just 100 characters for the file name. The
 -- USTAR format extended this with an extra 155 characters, however it uses a
 -- complex method of splitting the name between the two sections.
 --
 -- Instead of just putting any overflow into the extended area, it uses the
--- extended area as a prefix. The agrevating insane bit however is that the
+-- extended area as a prefix. The aggravating insane bit however is that the
 -- prefix (if any) must only contain a directory prefix. That is the split
 -- between the two areas must be on a directory separator boundary. So there is
 -- no simple calculation to work out if a file name is too long. Instead we
@@ -896,8 +893,3 @@ recurseDirectories base (dir:dirs) = unsafeInterleaveIO $ do
     ignore ['.']      = True
     ignore ['.', '.'] = True
     ignore _          = False
-
-getModTime :: FilePath -> IO EpochTime
-getModTime path = do
-  (TOD s _) <- getModificationTime path
-  return $! fromIntegral s
