@@ -10,7 +10,7 @@ from cabal-install and its dependant libraries.
 Licenses (all BSD3) and authors are provided in the original packages (on hackage).
 
 List of packages:
-cabal-install-0.14.0
+cabal-install-1.16.0.2
 network-2.3.0.13
 parsec-3.1.2
 mtl-2.1.2
