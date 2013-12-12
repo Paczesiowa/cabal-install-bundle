@@ -1,5 +1,5 @@
 Name:               cabal-install-bundle
-Version:            0.16.0.2
+Version:            0.16.0.2.1
 Synopsis:           The (bundled) command-line interface for Cabal and Hackage.
 Description:        This is cabal-install with bundled dependencies. Easier to bootstrap.
 License:            BSD3
@@ -177,6 +177,7 @@ Executable cabal
         Distribution.Client.Install
         Distribution.Client.InstallPlan
         Distribution.Client.InstallSymlink
+        Distribution.Client.JobControl
         Distribution.Client.List
         Distribution.Client.PackageIndex
         Distribution.Client.PackageUtils
@@ -194,6 +195,7 @@ Executable cabal
         Distribution.Client.Win32SelfUpgrade
         Distribution.Compat.Exception
         Distribution.Compat.FilePerms
+        Distribution.Compat.Time
         Paths_cabal_install_bundle
 
     build-depends: base >= 2 && < 99, Cabal >= 1.16, filepath, time, process, directory, pretty, containers, array, old-time, bytestring, unix
