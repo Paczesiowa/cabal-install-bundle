@@ -24,14 +24,17 @@ module Distribution.Client.Init (
 import System.IO
   ( hSetBuffering, stdout, BufferMode(..) )
 import System.Directory
-  ( getCurrentDirectory, doesDirectoryExist )
+  ( getCurrentDirectory, doesDirectoryExist, doesFileExist, copyFile
+  , getDirectoryContents )
 import System.FilePath
-  ( (</>) )
+  ( (</>), (<.>), takeBaseName )
 import Data.Time
   ( getCurrentTime, utcToLocalTime, toGregorian, localDay, getCurrentTimeZone )
 
+import Data.Char
+  ( toUpper )
 import Data.List
-  ( intersperse, intercalate, nub, groupBy, (\\) )
+  ( intercalate, nub, groupBy, (\\) )
 import Data.Maybe
   ( fromMaybe, isJust, catMaybes )
 import Data.Function
@@ -42,39 +45,35 @@ import Data.Traversable
 import Control.Applicative
   ( (<$>) )
 import Control.Monad
-  ( when )
-#if MIN_VERSION_base(3,0,0)
-import Control.Monad
-  ( (>=>), join )
-#endif
+  ( when, unless, (>=>), join )
 import Control.Arrow
-  ( (&&&) )
+  ( (&&&), (***) )
 
 import Text.PrettyPrint hiding (mode, cat)
 
 import Data.Version
   ( Version(..) )
 import Distribution.Version
-  ( orLaterVersion, withinVersion, VersionRange )
+  ( orLaterVersion, earlierVersion, intersectVersionRanges, VersionRange )
 import Distribution.Verbosity
   ( Verbosity )
 import Distribution.ModuleName
-  ( ModuleName, fromString )
+  ( ModuleName, fromString )  -- And for the Text instance
 import Distribution.InstalledPackageInfo
   ( InstalledPackageInfo, sourcePackageId, exposed )
 import qualified Distribution.Package as P
+import Language.Haskell.Extension ( Language(..) )
 
 import Distribution.Client.Init.Types
   ( InitFlags(..), PackageType(..), Category(..) )
 import Distribution.Client.Init.Licenses
-  ( bsd3, gplv2, gplv3, lgpl2, lgpl3, apache20 )
+  ( bsd3, gplv2, gplv3, lgpl2, lgpl3, agplv3, apache20 )
 import Distribution.Client.Init.Heuristics
-  ( guessPackageName, guessAuthorNameMail, SourceFileEntry(..), scanForModules, neededBuildPrograms )
+  ( guessPackageName, guessAuthorNameMail, SourceFileEntry(..),
+    scanForModules, neededBuildPrograms )
 
 import Distribution.License
   ( License(..), knownLicenses )
-import Distribution.ModuleName
-  ( ) -- for the Text instance
 
 import Distribution.ReadE
   ( runReadE, readP_to_E )
@@ -126,7 +125,9 @@ extendFlags pkgIx =
   >=> getHomepage
   >=> getSynopsis
   >=> getCategory
+  >=> getExtraSourceFiles
   >=> getLibOrExec
+  >=> getLanguage
   >=> getGenComments
   >=> getSrcDir
   >=> getModulesBuildToolsAndDeps pkgIx
@@ -178,13 +179,15 @@ getLicense flags = do
   return $ flags { license = maybeToFlag lic }
   where
     listedLicenses =
-      knownLicenses \\ [GPL Nothing, LGPL Nothing, Apache Nothing, OtherLicense]
+      knownLicenses \\ [GPL Nothing, LGPL Nothing, AGPL Nothing
+                       , Apache Nothing, OtherLicense]
 
 -- | The author's name and email. Prompt, or try to guess from an existing
 --   darcs repo.
 getAuthorInfo :: InitFlags -> IO InitFlags
 getAuthorInfo flags = do
-  (authorName, authorEmail)  <- (\(a,e) -> (flagToMaybe a, flagToMaybe e)) `fmap` guessAuthorNameMail
+  (authorName, authorEmail)  <-
+    (flagToMaybe *** flagToMaybe) `fmap` guessAuthorNameMail
   authorName'  <-     return (flagToMaybe $ author flags)
                   ?>> maybePrompt flags (promptStr "Author name" authorName)
                   ?>> return authorName
@@ -230,22 +233,59 @@ getCategory flags = do
                          (promptListOptional "Project category" [Codec ..]))
   return $ flags { category = maybeToFlag cat }
 
+-- | Try to guess extra source files (don't prompt the user).
+getExtraSourceFiles :: InitFlags -> IO InitFlags
+getExtraSourceFiles flags = do
+  extraSrcFiles <-     return (extraSrc flags)
+                   ?>> Just `fmap` guessExtraSourceFiles flags
+
+  return $ flags { extraSrc = extraSrcFiles }
+
+-- | Try to guess things to include in the extra-source-files field.
+--   For now, we just look for things in the root directory named
+--   'readme', 'changes', or 'changelog', with any sort of
+--   capitalization and any extension.
+guessExtraSourceFiles :: InitFlags -> IO [FilePath]
+guessExtraSourceFiles flags = do
+  dir <-
+    maybe getCurrentDirectory return . flagToMaybe $ packageDir flags
+  files <- getDirectoryContents dir
+  return $ filter isExtra files
+
+  where
+    isExtra = (`elem` ["README", "CHANGES", "CHANGELOG"])
+            . map toUpper
+            . takeBaseName
+
 -- | Ask whether the project builds a library or executable.
 getLibOrExec :: InitFlags -> IO InitFlags
 getLibOrExec flags = do
   isLib <-     return (flagToMaybe $ packageType flags)
            ?>> maybePrompt flags (either (const Library) id `fmap`
-                                   (promptList "What does the package build"
-                                               [Library, Executable]
-                                               Nothing display False))
+                                   promptList "What does the package build"
+                                   [Library, Executable]
+                                   Nothing display False)
            ?>> return (Just Library)
 
   return $ flags { packageType = maybeToFlag isLib }
 
--- | Ask whether to generate explanitory comments.
+-- | Ask for the base language of the package.
+getLanguage :: InitFlags -> IO InitFlags
+getLanguage flags = do
+  lang <-     return (flagToMaybe $ language flags)
+          ?>> maybePrompt flags
+                (either UnknownLanguage id `fmap`
+                  promptList "What base language is the package written in"
+                  [Haskell2010, Haskell98]
+                  (Just Haskell2010) display True)
+          ?>> return (Just Haskell2010)
+
+  return $ flags { language = maybeToFlag lang }
+
+-- | Ask whether to generate explanatory comments.
 getGenComments :: InitFlags -> IO InitFlags
 getGenComments flags = do
-  genComments <-     return (flagToMaybe $ noComments flags)
+  genComments <-     return (not <$> flagToMaybe (noComments flags))
                  ?>> maybePrompt flags (promptYesNo promptMsg (Just False))
                  ?>> return (Just False)
   return $ flags { noComments = maybeToFlag (fmap not genComments) }
@@ -256,7 +296,7 @@ getGenComments flags = do
 getSrcDir :: InitFlags -> IO InitFlags
 getSrcDir flags = do
   srcDirs <-     return (sourceDirs flags)
-             ?>> Just `fmap` (guessSourceDirs flags)
+             ?>> Just `fmap` guessSourceDirs flags
 
   return $ flags { sourceDirs = srcDirs }
 
@@ -264,8 +304,8 @@ getSrcDir flags = do
 --   moment just looks to see whether there is a directory called 'src'.
 guessSourceDirs :: InitFlags -> IO [String]
 guessSourceDirs flags = do
-  dir      <- fromMaybe getCurrentDirectory
-                (fmap return . flagToMaybe $ packageDir flags)
+  dir      <-
+    maybe getCurrentDirectory return . flagToMaybe $ packageDir flags
   srcIsDir <- doesDirectoryExist (dir </> "src")
   if srcIsDir
     then return ["src"]
@@ -274,8 +314,7 @@ guessSourceDirs flags = do
 -- | Get the list of exposed modules and extra tools needed to build them.
 getModulesBuildToolsAndDeps :: PackageIndex -> InitFlags -> IO InitFlags
 getModulesBuildToolsAndDeps pkgIx flags = do
-  dir <- fromMaybe getCurrentDirectory
-                   (fmap return . flagToMaybe $ packageDir flags)
+  dir <- maybe getCurrentDirectory return . flagToMaybe $ packageDir flags
 
   -- XXX really should use guessed source roots.
   sourceFiles <- scanForModules dir
@@ -288,12 +327,23 @@ getModulesBuildToolsAndDeps pkgIx flags = do
 
   deps <-      return (dependencies flags)
            ?>> Just <$> importsToDeps flags
-                        (fromString "Prelude" : concatMap imports sourceFiles)
+                        (fromString "Prelude" :  -- to ensure we get base as a dep
+                           (   nub   -- only need to consider each imported package once
+                             . filter (`notElem` mods)  -- don't consider modules from
+                                                        -- this package itself
+                             . concatMap imports
+                             $ sourceFiles
+                           )
+                        )
                         pkgIx
+
+  exts <-     return (otherExts flags)
+          ?>> (return . Just . nub . concatMap extensions $ sourceFiles)
 
   return $ flags { exposedModules = Just mods
                  , buildTools     = tools
                  , dependencies   = deps
+                 , otherExts      = exts
                  }
 
 importsToDeps :: InitFlags -> [ModuleName] -> PackageIndex -> IO [P.Dependency]
@@ -333,7 +383,7 @@ chooseDep flags (m, Just ps)
       grps  -> do message flags ("\nWarning: multiple packages found providing "
                                  ++ display m
                                  ++ ": " ++ intercalate ", " (map (display . P.pkgName . head) grps))
-                  message flags ("You will need to pick one and manually add it to the Build-depends: field.")
+                  message flags "You will need to pick one and manually add it to the Build-depends: field."
                   return Nothing
   where
     pkgGroups = groupBy ((==) `on` P.pkgName) (map sourcePackageId ps)
@@ -351,7 +401,18 @@ chooseDep flags (m, Just ps)
                             (pvpize . maximum . map P.pkgVersion $ pids)
 
     pvpize :: Version -> VersionRange
-    pvpize v = withinVersion $ v { versionBranch = take 2 (versionBranch v) }
+    pvpize v = orLaterVersion v'
+               `intersectVersionRanges`
+               earlierVersion (incVersion 1 v')
+      where v' = (v { versionBranch = take 2 (versionBranch v) })
+
+incVersion :: Int -> Version -> Version
+incVersion n (Version vlist tags) = Version (incVersion' n vlist) tags
+  where
+    incVersion' 0 []     = [1]
+    incVersion' 0 (v:_)  = [v+1]
+    incVersion' m []     = replicate m 0 ++ [1]
+    incVersion' m (v:vs) = v : incVersion' (m-1) vs
 
 ---------------------------------------------------------------------------
 --  Prompting/user interaction  -------------------------------------------
@@ -421,7 +482,7 @@ promptListOptional pr choices =
   $ promptList pr (Nothing : map Just choices) (Just Nothing)
                (maybe "(none)" display) True
   where
-    rearrange = either (Just . Left) (maybe Nothing (Just . Right))
+    rearrange = either (Just . Left) (fmap Right)
 
 -- | Create a prompt from a list of items.
 promptList :: Eq t
@@ -435,8 +496,7 @@ promptList pr choices def displayItem other = do
   putStrLn $ pr ++ ":"
   let options1 = map (\c -> (Just c == def, displayItem c)) choices
       options2 = zip ([1..]::[Int])
-                     (options1 ++ if other then [(False, "Other (specify)")]
-                                           else [])
+                     (options1 ++ [(False, "Other (specify)") | other])
   mapM_ (putStrLn . \(n,(i,s)) -> showOption n i ++ s) options2
   promptList' displayItem (length options2) choices def other
  where showOption n i | n < 10 = " " ++ star i ++ " " ++ rest
@@ -495,13 +555,16 @@ writeLicense flags = do
           Flag (LGPL (Just (Version {versionBranch = [3]})))
             -> Just lgpl3
 
+          Flag (AGPL (Just (Version {versionBranch = [3]})))
+            -> Just agplv3
+
           Flag (Apache (Just (Version {versionBranch = [2, 0]})))
             -> Just apache20
 
           _ -> Nothing
 
   case licenseFile of
-    Just licenseText -> writeFile "LICENSE" licenseText
+    Just licenseText -> writeFileSafe flags "LICENSE" licenseText
     Nothing -> message flags "Warning: unknown license type, you must put a copy in LICENSE yourself."
 
 getYear :: IO Integer
@@ -515,15 +578,13 @@ getYear = do
 writeSetupFile :: InitFlags -> IO ()
 writeSetupFile flags = do
   message flags "Generating Setup.hs..."
-  writeFile "Setup.hs" setupFile
+  writeFileSafe flags "Setup.hs" setupFile
  where
   setupFile = unlines
     [ "import Distribution.Simple"
     , "main = defaultMain"
     ]
 
--- XXX ought to do something sensible if a .cabal file already exists,
--- instead of overwriting.
 writeCabalFile :: InitFlags -> IO Bool
 writeCabalFile flags@(InitFlags{packageName = NoFlag}) = do
   message flags "Error: no package name provided."
@@ -531,8 +592,35 @@ writeCabalFile flags@(InitFlags{packageName = NoFlag}) = do
 writeCabalFile flags@(InitFlags{packageName = Flag p}) = do
   let cabalFileName = p ++ ".cabal"
   message flags $ "Generating " ++ cabalFileName ++ "..."
-  writeFile cabalFileName (generateCabalFile cabalFileName flags)
+  writeFileSafe flags cabalFileName (generateCabalFile cabalFileName flags)
   return True
+
+-- | Write a file \"safely\", backing up any existing version (unless
+--   the overwrite flag is set).
+writeFileSafe :: InitFlags -> FilePath -> String -> IO ()
+writeFileSafe flags fileName content = do
+  moveExistingFile flags fileName
+  writeFile fileName content
+
+-- | Move an existing file, if there is one, and the overwrite flag is
+--   not set.
+moveExistingFile :: InitFlags -> FilePath -> IO ()
+moveExistingFile flags fileName =
+  unless (overwrite flags == Flag True) $ do
+    e <- doesFileExist fileName
+    when e $ do
+      newName <- findNewName fileName
+      message flags $ "Warning: " ++ fileName ++ " already exists, backing up old version in " ++ newName
+      copyFile fileName newName
+
+findNewName :: FilePath -> IO FilePath
+findNewName oldName = findNewName' 0
+  where
+    findNewName' :: Integer -> IO FilePath
+    findNewName' n = do
+      let newName = oldName <.> ("save" ++ show n)
+      e <- doesFileExist newName
+      if e then findNewName' (n+1) else return newName
 
 -- | Generate a .cabal file from an InitFlags structure.  NOTE: this
 --   is rather ad-hoc!  What we would REALLY like is to have a
@@ -545,7 +633,7 @@ writeCabalFile flags@(InitFlags{packageName = Flag p}) = do
 generateCabalFile :: String -> InitFlags -> String
 generateCabalFile fileName c =
   renderStyle style { lineLength = 79, ribbonsPerLine = 1.1 } $
-  (if (minimal c /= Flag True)
+  (if minimal c /= Flag True
     then showComment (Just $ "Initial " ++ fileName ++ " generated by cabal "
                           ++ "init.  For further documentation, see "
                           ++ "http://haskell.org/cabal/users-guide/")
@@ -607,22 +695,22 @@ generateCabalFile fileName c =
                 Nothing
                 True
 
-       , fieldS "extra-source-files" NoFlag
+       , fieldS "extra-source-files" (listFieldS (extraSrc c))
                 (Just "Extra files to be distributed with the package, such as examples or a README.")
-                False
+                True
 
-       , field  "cabal-version" (Flag $ orLaterVersion (Version [1,8] []))
+       , field  "cabal-version" (Flag $ orLaterVersion (Version [1,10] []))
                 (Just "Constraint on the version of Cabal needed to build this package.")
                 False
 
        , case packageType c of
            Flag Executable ->
-             text "\nexecutable" <+> text (fromMaybe "" . flagToMaybe $ packageName c) $$ (nest 2 $ vcat
+             text "\nexecutable" <+> text (fromMaybe "" . flagToMaybe $ packageName c) $$ nest 2 (vcat
              [ fieldS "main-is" NoFlag (Just ".hs or .lhs file containing the Main module.") True
 
              , generateBuildInfo Executable c
              ])
-           Flag Library    -> text "\nlibrary" $$ (nest 2 $ vcat
+           Flag Library    -> text "\nlibrary" $$ nest 2 (vcat
              [ fieldS "exposed-modules" (listField (exposedModules c))
                       (Just "Modules exported by the library.")
                       True
@@ -640,24 +728,32 @@ generateCabalFile fileName c =
                  Executable -> "Modules included in this executable, other than Main.")
               True
 
+     , fieldS "other-extensions" (listField (otherExts c'))
+              (Just "LANGUAGE extensions used by modules in this package.")
+              True
+
      , fieldS "build-depends" (listField (dependencies c'))
               (Just "Other library packages from which modules are imported.")
               True
 
      , fieldS "hs-source-dirs" (listFieldS (sourceDirs c'))
               (Just "Directories containing source files.")
-              False
+              True
 
      , fieldS "build-tools" (listFieldS (buildTools c'))
               (Just "Extra tools (e.g. alex, hsc2hs, ...) needed to build the source.")
               False
+
+     , field  "default-language" (language c')
+              (Just "Base language which the package is written in.")
+              True
      ]
 
    listField :: Text s => Maybe [s] -> Flag String
    listField = listFieldS . fmap (map display)
 
    listFieldS :: Maybe [String] -> Flag String
-   listFieldS = Flag . maybe "" (concat . intersperse ", ")
+   listFieldS = Flag . maybe "" (intercalate ", ")
 
    field :: Text t => String -> Flag t -> Maybe String -> Bool -> Doc
    field s f = fieldS s (fmap display f)
@@ -676,15 +772,15 @@ generateCabalFile fileName c =
                         (False, _, _)     -> ($$ text "")
                       $
                       comment f <> text s <> colon
-                                <> text (take (20 - length s) (repeat ' '))
+                                <> text (replicate (20 - length s) ' ')
                                 <> text (fromMaybe "" . flagToMaybe $ f)
    comment NoFlag    = text "-- "
    comment (Flag "") = text "-- "
    comment _         = text ""
 
    showComment :: Maybe String -> Doc
-   showComment (Just t) = vcat . map text
-                        . map ("-- "++) . lines
+   showComment (Just t) = vcat
+                        . map (text . ("-- "++)) . lines
                         . renderStyle style {
                             lineLength = 76,
                             ribbonsPerLine = 1.05
@@ -714,9 +810,3 @@ generateWarnings flags = do
 message :: InitFlags -> String -> IO ()
 message (InitFlags{quiet = Flag True}) _ = return ()
 message _ s = putStrLn s
-
-#if MIN_VERSION_base(3,0,0)
-#else
-(>=>)       :: Monad m => (a -> m b) -> (b -> m c) -> (a -> m c)
-f >=> g     = \x -> f x >>= g
-#endif

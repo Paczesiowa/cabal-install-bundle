@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Client.Init.Types
@@ -22,6 +21,7 @@ import Distribution.Verbosity
 import qualified Distribution.Package as P
 import Distribution.License
 import Distribution.ModuleName
+import Language.Haskell.Extension ( Language(..), Extension )
 
 import qualified Text.PrettyPrint as Disp
 import qualified Distribution.Compat.ReadP as Parse
@@ -51,19 +51,27 @@ data InitFlags =
 
               , synopsis     :: Flag String
               , category     :: Flag (Either String Category)
+              , extraSrc     :: Maybe [String]
 
               , packageType  :: Flag PackageType
+              , language     :: Flag Language
 
               , exposedModules :: Maybe [ModuleName]
               , otherModules   :: Maybe [ModuleName]
+              , otherExts      :: Maybe [Extension]
 
               , dependencies :: Maybe [P.Dependency]
               , sourceDirs   :: Maybe [String]
               , buildTools   :: Maybe [String]
 
               , initVerbosity :: Flag Verbosity
+              , overwrite     :: Flag Bool
               }
   deriving (Show)
+
+  -- the Monoid instance for Flag has later values override earlier
+  -- ones, which is why we want Maybe [foo] for collecting foo values,
+  -- not Flag [foo].
 
 data PackageType = Library | Executable
   deriving (Show, Read, Eq)
@@ -88,13 +96,17 @@ instance Monoid InitFlags where
     , homepage       = mempty
     , synopsis       = mempty
     , category       = mempty
+    , extraSrc       = mempty
     , packageType    = mempty
+    , language       = mempty
     , exposedModules = mempty
     , otherModules   = mempty
+    , otherExts      = mempty
     , dependencies   = mempty
     , sourceDirs     = mempty
     , buildTools     = mempty
     , initVerbosity  = mempty
+    , overwrite      = mempty
     }
   mappend  a b = InitFlags
     { nonInteractive = combine nonInteractive
@@ -111,13 +123,17 @@ instance Monoid InitFlags where
     , homepage       = combine homepage
     , synopsis       = combine synopsis
     , category       = combine category
+    , extraSrc       = combine extraSrc
     , packageType    = combine packageType
+    , language       = combine language
     , exposedModules = combine exposedModules
     , otherModules   = combine otherModules
+    , otherExts      = combine otherExts
     , dependencies   = combine dependencies
     , sourceDirs     = combine sourceDirs
     , buildTools     = combine buildTools
     , initVerbosity  = combine initVerbosity
+    , overwrite      = combine overwrite
     }
     where combine field = field a `mappend` field b
 
@@ -146,12 +162,3 @@ instance Text Category where
   disp  = Disp.text . show
   parse = Parse.choice $ map (fmap read . Parse.string . show) [Codec .. ]
 
-#if MIN_VERSION_base(3,0,0)
-#else
--- Compat instance for ghc-6.6 era
-instance Monoid a => Monoid (Maybe a) where
-  mempty = Nothing
-  Nothing `mappend` m = m
-  m `mappend` Nothing = m
-  Just m1 `mappend` Just m2 = Just (m1 `mappend` m2)
-#endif

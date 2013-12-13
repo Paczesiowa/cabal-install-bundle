@@ -15,18 +15,23 @@ module Distribution.Client.Setup
     , configureCommand, ConfigFlags(..), filterConfigureFlags
     , configureExCommand, ConfigExFlags(..), defaultConfigExFlags
                         , configureExOptions
+    , buildCommand, BuildFlags(..), BuildExFlags(..), SkipAddSourceDepsCheck(..)
+    , testCommand, benchmarkCommand
     , installCommand, InstallFlags(..), installOptions, defaultInstallFlags
     , listCommand, ListFlags(..)
     , updateCommand
     , upgradeCommand
     , infoCommand, InfoFlags(..)
     , fetchCommand, FetchFlags(..)
+    , getCommand, unpackCommand, GetFlags(..)
     , checkCommand
     , uploadCommand, UploadFlags(..)
     , reportCommand, ReportFlags(..)
-    , unpackCommand, UnpackFlags(..)
+    , runCommand
     , initCommand, IT.InitFlags(..)
     , sdistCommand, SDistFlags(..), SDistExFlags(..), ArchiveFormat(..)
+    , win32SelfUpgradeCommand, Win32SelfUpgradeFlags(..)
+    , sandboxCommand, defaultSandboxLocation, SandboxFlags(..)
 
     , parsePackageArgs
     --TODO: stop exporting these:
@@ -49,18 +54,20 @@ import Distribution.Simple.Program
          ( defaultProgramConfiguration )
 import Distribution.Simple.Command hiding (boolOpt)
 import qualified Distribution.Simple.Setup as Cabal
-         ( configureCommand, sdistCommand, haddockCommand )
 import Distribution.Simple.Setup
-         ( ConfigFlags(..), SDistFlags(..), HaddockFlags(..) )
-import Distribution.Simple.Setup
-         ( Flag(..), toFlag, fromFlag, flagToMaybe, flagToList
+         ( ConfigFlags(..), BuildFlags(..), TestFlags(..), BenchmarkFlags(..)
+         , SDistFlags(..), HaddockFlags(..)
+         , Flag(..), toFlag, fromFlag, flagToMaybe, flagToList
          , optionVerbosity, boolOpt, trueArg, falseArg )
 import Distribution.Simple.InstallDirs
-         ( PathTemplate, toPathTemplate, fromPathTemplate )
+         ( PathTemplate, InstallDirs(sysconfdir)
+         , toPathTemplate, fromPathTemplate )
 import Distribution.Version
          ( Version(Version), anyVersion, thisVersion )
 import Distribution.Package
          ( PackageIdentifier, packageName, packageVersion, Dependency(..) )
+import Distribution.PackageDescription
+         ( RepoKind(..) )
 import Distribution.Text
          ( Text(..), display )
 import Distribution.ReadE
@@ -93,26 +100,28 @@ import Network.URI
 
 -- | Flags that apply at the top level, not to any sub-command.
 data GlobalFlags = GlobalFlags {
-    globalVersion        :: Flag Bool,
-    globalNumericVersion :: Flag Bool,
-    globalConfigFile     :: Flag FilePath,
-    globalRemoteRepos    :: [RemoteRepo],     -- ^ Available Hackage servers.
-    globalCacheDir       :: Flag FilePath,
-    globalLocalRepos     :: [FilePath],
-    globalLogsDir        :: Flag FilePath,
-    globalWorldFile      :: Flag FilePath
+    globalVersion           :: Flag Bool,
+    globalNumericVersion    :: Flag Bool,
+    globalConfigFile        :: Flag FilePath,
+    globalSandboxConfigFile :: Flag FilePath,
+    globalRemoteRepos       :: [RemoteRepo],     -- ^ Available Hackage servers.
+    globalCacheDir          :: Flag FilePath,
+    globalLocalRepos        :: [FilePath],
+    globalLogsDir           :: Flag FilePath,
+    globalWorldFile         :: Flag FilePath
   }
 
 defaultGlobalFlags :: GlobalFlags
 defaultGlobalFlags  = GlobalFlags {
-    globalVersion        = Flag False,
-    globalNumericVersion = Flag False,
-    globalConfigFile     = mempty,
-    globalRemoteRepos    = [],
-    globalCacheDir       = mempty,
-    globalLocalRepos     = mempty,
-    globalLogsDir        = mempty,
-    globalWorldFile      = mempty
+    globalVersion           = Flag False,
+    globalNumericVersion    = Flag False,
+    globalConfigFile        = mempty,
+    globalSandboxConfigFile = mempty,
+    globalRemoteRepos       = [],
+    globalCacheDir          = mempty,
+    globalLocalRepos        = mempty,
+    globalLogsDir           = mempty,
+    globalWorldFile         = mempty
   }
 
 globalCommand :: CommandUI GlobalFlags
@@ -132,7 +141,7 @@ globalCommand = CommandUI {
       ++ "  " ++ pname ++ " update\n",
     commandDefaultFlags = defaultGlobalFlags,
     commandOptions      = \showOrParseArgs ->
-      (case showOrParseArgs of ShowArgs -> take 2; ParseArgs -> id)
+      (case showOrParseArgs of ShowArgs -> take 4; ParseArgs -> id)
       [option ['V'] ["version"]
          "Print version information"
          globalVersion (\v flags -> flags { globalVersion = v })
@@ -146,6 +155,12 @@ globalCommand = CommandUI {
       ,option [] ["config-file"]
          "Set an alternate location for the config file"
          globalConfigFile (\v flags -> flags { globalConfigFile = v })
+         (reqArgFlag "FILE")
+
+      ,option [] ["sandbox-config-file"]
+         "Set an alternate location for the sandbox config file \
+         (default: './cabal.sandbox.config')"
+         globalConfigFile (\v flags -> flags { globalSandboxConfigFile = v })
          (reqArgFlag "FILE")
 
       ,option [] ["remote-repo"]
@@ -177,24 +192,26 @@ globalCommand = CommandUI {
 
 instance Monoid GlobalFlags where
   mempty = GlobalFlags {
-    globalVersion        = mempty,
-    globalNumericVersion = mempty,
-    globalConfigFile     = mempty,
-    globalRemoteRepos    = mempty,
-    globalCacheDir       = mempty,
-    globalLocalRepos     = mempty,
-    globalLogsDir        = mempty,
-    globalWorldFile      = mempty
+    globalVersion           = mempty,
+    globalNumericVersion    = mempty,
+    globalConfigFile        = mempty,
+    globalSandboxConfigFile = mempty,
+    globalRemoteRepos       = mempty,
+    globalCacheDir          = mempty,
+    globalLocalRepos        = mempty,
+    globalLogsDir           = mempty,
+    globalWorldFile         = mempty
   }
   mappend a b = GlobalFlags {
-    globalVersion        = combine globalVersion,
-    globalNumericVersion = combine globalNumericVersion,
-    globalConfigFile     = combine globalConfigFile,
-    globalRemoteRepos    = combine globalRemoteRepos,
-    globalCacheDir       = combine globalCacheDir,
-    globalLocalRepos     = combine globalLocalRepos,
-    globalLogsDir        = combine globalLogsDir,
-    globalWorldFile      = combine globalWorldFile
+    globalVersion           = combine globalVersion,
+    globalNumericVersion    = combine globalNumericVersion,
+    globalConfigFile        = combine globalConfigFile,
+    globalSandboxConfigFile = combine globalConfigFile,
+    globalRemoteRepos       = combine globalRemoteRepos,
+    globalCacheDir          = combine globalCacheDir,
+    globalLocalRepos        = combine globalLocalRepos,
+    globalLogsDir           = combine globalLogsDir,
+    globalWorldFile         = combine globalWorldFile
   }
     where combine field = field a `mappend` field b
 
@@ -224,9 +241,25 @@ configureOptions = commandOptions configureCommand
 
 filterConfigureFlags :: ConfigFlags -> Version -> ConfigFlags
 filterConfigureFlags flags cabalLibVersion
-  | cabalLibVersion >= Version [1,3,10] [] = flags
-    -- older Cabal does not grok the constraints flag:
-  | otherwise = flags { configConstraints = [] }
+  | cabalLibVersion >= Version [1,18,0] [] = flags
+  | cabalLibVersion <  Version [1,3,10] [] = flags_1_3_10
+  | cabalLibVersion <  Version [1,10,0] [] = flags_1_10_0
+  | cabalLibVersion <  Version [1,14,0] [] = flags_1_14_0
+  | cabalLibVersion <  Version [1,18,0] [] = flags_1_18_0
+
+  -- A no-op that silences the "pattern match is non-exhaustive" warning.
+  | otherwise = flags
+  where
+    -- Cabal < 1.18.0 doesn't know about --extra-prog-path and --sysconfdir.
+    flags_1_18_0 = flags        { configProgramPathExtra = []
+                                , configInstallDirs = configInstallDirs_1_18_0}
+    configInstallDirs_1_18_0 = (configInstallDirs flags) { sysconfdir = NoFlag }
+    -- Cabal < 1.14.0 doesn't know about --disable-benchmarks.
+    flags_1_14_0 = flags_1_18_0 { configBenchmarks  = NoFlag }
+    -- Cabal < 1.10.0 doesn't know about --disable-tests.
+    flags_1_10_0 = flags_1_14_0 { configTests       = NoFlag }
+    -- Cabal < 1.3.10 does not grok the constraints flag.
+    flags_1_3_10 = flags_1_10_0 { configConstraints = [] }
 
 -- ------------------------------------------------------------
 -- * Config extra flags
@@ -297,6 +330,99 @@ instance Monoid ConfigExFlags where
     configSolver       = combine configSolver
   }
     where combine field = field a `mappend` field b
+
+-- ------------------------------------------------------------
+-- * Build flags
+-- ------------------------------------------------------------
+
+data SkipAddSourceDepsCheck =
+  SkipAddSourceDepsCheck | DontSkipAddSourceDepsCheck
+  deriving Eq
+
+data BuildExFlags = BuildExFlags {
+  buildNumJobs  :: Flag (Maybe Int),
+  buildOnly     :: Flag SkipAddSourceDepsCheck
+}
+
+buildExOptions :: ShowOrParseArgs -> [OptionField BuildExFlags]
+buildExOptions _showOrParseArgs =
+  option "j" ["jobs"]
+  "Run NUM jobs simultaneously (or '$ncpus' if no NUM is given)"
+  buildNumJobs (\v flags -> flags { buildNumJobs = v })
+  (optArg "NUM" (fmap Flag numJobsParser)
+   (Flag Nothing)
+   (map (Just . maybe "$ncpus" show) . flagToList))
+
+  : option [] ["only"]
+  "Don't reinstall add-source dependencies (sandbox-only)"
+  buildOnly (\v flags -> flags { buildOnly = v })
+  (noArg (Flag SkipAddSourceDepsCheck))
+
+  : []
+
+buildCommand :: CommandUI (BuildFlags, BuildExFlags)
+buildCommand = parent {
+    commandDefaultFlags = (commandDefaultFlags parent, mempty),
+    commandOptions      =
+      \showOrParseArgs -> liftOptions fst setFst
+                          (commandOptions parent showOrParseArgs)
+                          ++
+                          liftOptions snd setSnd (buildExOptions showOrParseArgs)
+  }
+  where
+    setFst a (_,b) = (a,b)
+    setSnd b (a,_) = (a,b)
+
+    parent = Cabal.buildCommand defaultProgramConfiguration
+
+instance Monoid BuildExFlags where
+  mempty = BuildExFlags {
+    buildNumJobs = mempty,
+    buildOnly    = mempty
+  }
+  mappend a b = BuildExFlags {
+    buildNumJobs = combine buildNumJobs,
+    buildOnly    = combine buildOnly
+  }
+    where combine field = field a `mappend` field b
+
+-- ------------------------------------------------------------
+-- * Test command
+-- ------------------------------------------------------------
+
+testCommand :: CommandUI (TestFlags, BuildExFlags)
+testCommand = parent {
+  commandDefaultFlags = (commandDefaultFlags parent, mempty),
+  commandOptions      =
+    \showOrParseArgs -> liftOptions fst setFst
+                        (commandOptions parent showOrParseArgs)
+                        ++
+                        liftOptions snd setSnd (buildExOptions showOrParseArgs)
+  }
+  where
+    setFst a (_,b) = (a,b)
+    setSnd b (a,_) = (a,b)
+
+    parent = Cabal.testCommand
+
+-- ------------------------------------------------------------
+-- * Bench command
+-- ------------------------------------------------------------
+
+benchmarkCommand :: CommandUI (BenchmarkFlags, BuildExFlags)
+benchmarkCommand = parent {
+  commandDefaultFlags = (commandDefaultFlags parent, mempty),
+  commandOptions      =
+    \showOrParseArgs -> liftOptions fst setFst
+                        (commandOptions parent showOrParseArgs)
+                        ++
+                        liftOptions snd setSnd (buildExOptions showOrParseArgs)
+  }
+  where
+    setFst a (_,b) = (a,b)
+    setSnd b (a,_) = (a,b)
+
+    parent = Cabal.benchmarkCommand
 
 -- ------------------------------------------------------------
 -- * Fetch command
@@ -375,9 +501,9 @@ fetchCommand = CommandUI {
 updateCommand  :: CommandUI (Flag Verbosity)
 updateCommand = CommandUI {
     commandName         = "update",
-    commandSynopsis     = "Updates list of known packages",
+    commandSynopsis     = "Updates list of known packages.",
     commandDescription  = Nothing,
-    commandUsage        = usagePackages "update",
+    commandUsage        = usageFlags "update",
     commandDefaultFlags = toFlag normal,
     commandOptions      = \_ -> [optionVerbosity id const]
   }
@@ -387,7 +513,7 @@ upgradeCommand = configureCommand {
     commandName         = "upgrade",
     commandSynopsis     = "(command disabled, use install instead)",
     commandDescription  = Nothing,
-    commandUsage        = usagePackages "upgrade",
+    commandUsage        = usageFlagsOrPackages "upgrade",
     commandDefaultFlags = (mempty, mempty, mempty, mempty),
     commandOptions      = commandOptions installCommand
   }
@@ -406,12 +532,35 @@ cleanCommand = makeCommand name shortDesc longDesc emptyFlags options
 checkCommand  :: CommandUI (Flag Verbosity)
 checkCommand = CommandUI {
     commandName         = "check",
-    commandSynopsis     = "Check the package for common mistakes",
+    commandSynopsis     = "Check the package for common mistakes.",
     commandDescription  = Nothing,
     commandUsage        = \pname -> "Usage: " ++ pname ++ " check\n",
     commandDefaultFlags = toFlag normal,
     commandOptions      = \_ -> []
   }
+
+runCommand :: CommandUI (BuildFlags, BuildExFlags)
+runCommand = CommandUI {
+    commandName         = "run",
+    commandSynopsis     = "Runs the compiled executable.",
+    commandDescription  = Nothing,
+    commandUsage        =
+      \pname -> "Usage: " ++ pname
+                ++ " run [FLAGS] [EXECUTABLE] [-- EXECUTABLE_FLAGS]\n\n"
+                ++ "Flags for run:",
+    commandDefaultFlags = mempty,
+    commandOptions      =
+      \showOrParseArgs -> liftOptions fst setFst
+                          (Cabal.buildOptions progConf showOrParseArgs)
+                          ++
+                          liftOptions snd setSnd
+                          (buildExOptions showOrParseArgs)
+  }
+  where
+    setFst a (_,b) = (a,b)
+    setSnd b (a,_) = (a,b)
+
+    progConf = defaultProgramConfiguration
 
 -- ------------------------------------------------------------
 -- * Report flags
@@ -470,51 +619,73 @@ instance Monoid ReportFlags where
     where combine field = field a `mappend` field b
 
 -- ------------------------------------------------------------
--- * Unpack flags
+-- * Get flags
 -- ------------------------------------------------------------
 
-data UnpackFlags = UnpackFlags {
-      unpackDestDir :: Flag FilePath,
-      unpackVerbosity :: Flag Verbosity,
-      unpackPristine :: Flag Bool
-    }
+data GetFlags = GetFlags {
+    getDestDir          :: Flag FilePath,
+    getPristine         :: Flag Bool,
+    getSourceRepository :: Flag (Maybe RepoKind),
+    getVerbosity        :: Flag Verbosity
+  }
 
-defaultUnpackFlags :: UnpackFlags
-defaultUnpackFlags = UnpackFlags {
-    unpackDestDir = mempty,
-    unpackVerbosity = toFlag normal,
-    unpackPristine  = toFlag False
+defaultGetFlags :: GetFlags
+defaultGetFlags = GetFlags {
+    getDestDir          = mempty,
+    getPristine         = mempty,
+    getSourceRepository = mempty,
+    getVerbosity        = toFlag normal
    }
 
-unpackCommand :: CommandUI UnpackFlags
-unpackCommand = CommandUI {
-    commandName         = "unpack",
-    commandSynopsis     = "Unpacks packages for user inspection.",
-    commandDescription  = Nothing,
-    commandUsage        = usagePackages "unpack",
+getCommand :: CommandUI GetFlags
+getCommand = CommandUI {
+    commandName         = "get",
+    commandSynopsis     = "Gets a package's source code.",
+    commandDescription  = Just $ \_ ->
+          "Creates a local copy of a package's source code. By default it gets "
+       ++ "the source\ntarball and unpacks it in a local subdirectory. "
+       ++ "Alternatively, with -s it will\nget the code from the source "
+       ++ "repository specified by the package.\n",
+    commandUsage        = usagePackages "get",
     commandDefaultFlags = mempty,
     commandOptions      = \_ -> [
-        optionVerbosity unpackVerbosity (\v flags -> flags { unpackVerbosity = v })
+        optionVerbosity getVerbosity (\v flags -> flags { getVerbosity = v })
 
        ,option "d" ["destdir"]
-         "where to unpack the packages, defaults to the current directory."
-         unpackDestDir (\v flags -> flags { unpackDestDir = v })
+         "Where to place the package source, defaults to the current directory."
+         getDestDir (\v flags -> flags { getDestDir = v })
          (reqArgFlag "PATH")
+
+       ,option "s" ["source-repository"]
+         "Copy the package's source repository (ie git clone, darcs get, etc as appropriate)."
+         getSourceRepository (\v flags -> flags { getSourceRepository = v })
+        (optArg "[head|this|...]" (readP_to_E (const "invalid source-repository")
+                                              (fmap (toFlag . Just) parse))
+                                  (Flag Nothing)
+                                  (map (fmap show) . flagToList))
 
        , option [] ["pristine"]
            ("Unpack the original pristine tarball, rather than updating the "
            ++ ".cabal file with the latest revision from the package archive.")
-           unpackPristine (\v flags -> flags { unpackPristine = v })
+           getPristine (\v flags -> flags { getPristine = v })
            trueArg
        ]
   }
 
-instance Monoid UnpackFlags where
-  mempty = defaultUnpackFlags
-  mappend a b = UnpackFlags {
-    unpackDestDir   = combine unpackDestDir,
-    unpackVerbosity = combine unpackVerbosity,
-    unpackPristine  = combine unpackPristine
+-- 'cabal unpack' is a deprecated alias for 'cabal get'.
+unpackCommand :: CommandUI GetFlags
+unpackCommand = getCommand {
+  commandName  = "unpack",
+  commandUsage = usagePackages "unpack"
+  }
+
+instance Monoid GetFlags where
+  mempty = defaultGetFlags
+  mappend a b = GetFlags {
+    getDestDir          = combine getDestDir,
+    getPristine         = combine getPristine,
+    getSourceRepository = combine getSourceRepository,
+    getVerbosity        = combine getVerbosity
   }
     where combine field = field a `mappend` field b
 
@@ -540,7 +711,7 @@ listCommand = CommandUI {
     commandName         = "list",
     commandSynopsis     = "List packages matching a search string.",
     commandDescription  = Nothing,
-    commandUsage        = usagePackages "list",
+    commandUsage        = usageFlagsOrPackages "list",
     commandDefaultFlags = defaultListFlags,
     commandOptions      = \_ -> [
         optionVerbosity listVerbosity (\v flags -> flags { listVerbosity = v })
@@ -667,7 +838,7 @@ installCommand :: CommandUI (ConfigFlags, ConfigExFlags, InstallFlags, HaddockFl
 installCommand = CommandUI {
   commandName         = "install",
   commandSynopsis     = "Installs a list of packages.",
-  commandUsage        = usagePackages "install",
+  commandUsage        = usageFlagsOrPackages "install",
   commandDescription  = Just $ \pname ->
     let original = case commandDescription configureCommand of
           Just desc -> desc pname ++ "\n"
@@ -696,18 +867,19 @@ installCommand = CommandUI {
     get3 (_,_,c,_) = c; set3 c (a,b,_,d) = (a,b,c,d)
     get4 (_,_,_,d) = d; set4 d (a,b,c,_) = (a,b,c,d)
 
-    haddockOptions showOrParseArgs
-      = [ opt { optionName = "haddock-" ++ name,
-                optionDescr = [ fmapOptFlags (\(_, lflags) -> ([], map ("haddock-" ++) lflags)) descr
-                              | descr <- optionDescr opt] }
-        | opt <- commandOptions Cabal.haddockCommand showOrParseArgs
-        , let name = optionName opt
-        , name `elem` ["hoogle", "html", "html-location",
-                       "executables", "internal", "css",
-                       "hyperlink-source", "hscolour-css",
-                       "contents-location"]
-        ]
-
+haddockOptions :: ShowOrParseArgs -> [OptionField HaddockFlags]
+haddockOptions showOrParseArgs
+  = [ opt { optionName = "haddock-" ++ name,
+            optionDescr = [ fmapOptFlags (\(_, lflags) -> ([], map ("haddock-" ++) lflags)) descr
+                          | descr <- optionDescr opt] }
+    | opt <- commandOptions Cabal.haddockCommand showOrParseArgs
+    , let name = optionName opt
+    , name `elem` ["hoogle", "html", "html-location",
+                   "executables", "internal", "css",
+                   "hyperlink-source", "hscolour-css",
+                   "contents-location"]
+    ]
+  where
     fmapOptFlags :: (OptFlags -> OptFlags) -> OptDescr a -> OptDescr a
     fmapOptFlags modify (ReqArg d f p r w)    = ReqArg d (modify f) p r w
     fmapOptFlags modify (OptArg d f p r i w)  = OptArg d (modify f) p r i w
@@ -764,6 +936,11 @@ installOptions showOrParseArgs =
           installOnlyDeps (\v flags -> flags { installOnlyDeps = v })
           (yesNoOpt showOrParseArgs)
 
+      , option [] ["dependencies-only"]
+          "A synonym for --only-dependencies"
+          installOnlyDeps (\v flags -> flags { installOnlyDeps = v })
+          (yesNoOpt showOrParseArgs)
+
       , option [] ["root-cmd"]
           "Command used to gain root privileges, when installing with --global."
           installRootCmd (\v flags -> flags { installRootCmd = v })
@@ -799,21 +976,20 @@ installOptions showOrParseArgs =
           (yesNoOpt showOrParseArgs)
 
       , option "j" ["jobs"]
-        "Run NUM jobs simultaneously."
+        "Run NUM jobs simultaneously (or '$ncpus' if no NUM is given)."
         installNumJobs (\v flags -> flags { installNumJobs = v })
-        (optArg "NUM" (readP_to_E (\_ -> "jobs should be a number")
-                                  (fmap (toFlag . Just)
-                                        (Parse.readS_to_P reads)))
+        (optArg "NUM" (fmap Flag numJobsParser)
                       (Flag Nothing)
-                      (map (fmap show) . flagToList))
-      ] ++ case showOrParseArgs of      -- TODO: remove when "cabal install" avoids
+                      (map (Just . maybe "$ncpus" show) . flagToList))
+      ] ++ case showOrParseArgs of      -- TODO: remove when "cabal install"
+                                        -- avoids
           ParseArgs ->
-            option [] ["only"]
+            [ option [] ["only"]
               "Only installs the package in the current directory."
               installOnly (\v flags -> flags { installOnly = v })
-              trueArg
-             : []
+              trueArg ]
           _ -> []
+
 
 instance Monoid InstallFlags where
   mempty = InstallFlags {
@@ -884,7 +1060,7 @@ defaultUploadFlags = UploadFlags {
 uploadCommand :: CommandUI UploadFlags
 uploadCommand = CommandUI {
     commandName         = "upload",
-    commandSynopsis     = "Uploads source packages to Hackage",
+    commandSynopsis     = "Uploads source packages to Hackage.",
     commandDescription  = Just $ \_ ->
          "You can store your Hackage login in the ~/.cabal/config file\n",
     commandUsage        = \pname ->
@@ -976,6 +1152,11 @@ initCommand = CommandUI {
         IT.minimal (\v flags -> flags { IT.minimal = v })
         trueArg
 
+      , option [] ["overwrite"]
+        "Overwrite any existing .cabal, LICENSE, or Setup.hs files without warning."
+        IT.overwrite (\v flags -> flags { IT.overwrite = v })
+        trueArg
+
       , option [] ["package-dir"]
         "Root directory of the package (default = current directory)."
         IT.packageDir (\v flags -> flags { IT.packageDir = v })
@@ -1033,6 +1214,12 @@ initCommand = CommandUI {
         (reqArg' "CATEGORY" (\s -> toFlag $ maybe (Left s) Right (readMaybe s))
                             (flagToList . fmap (either id show)))
 
+      , option ['x'] ["extra-source-file"]
+        "Extra source file to be distributed with tarball."
+        IT.extraSrc (\v flags -> flags { IT.extraSrc = v })
+        (reqArg' "FILE" (Just . (:[]))
+                        (fromMaybe []))
+
       , option [] ["is-library"]
         "Build a library."
         IT.packageType (\v flags -> flags { IT.packageType = v })
@@ -1044,20 +1231,36 @@ initCommand = CommandUI {
         (\v flags -> flags { IT.packageType = v })
         (noArg (Flag IT.Executable))
 
+      , option [] ["language"]
+        "Specify the default language."
+        IT.language
+        (\v flags -> flags { IT.language = v })
+        (reqArg "LANGUAGE" (readP_to_E ("Cannot parse language: "++)
+                                       (toFlag `fmap` parse))
+                          (flagToList . fmap display))
+
       , option ['o'] ["expose-module"]
         "Export a module from the package."
         IT.exposedModules
         (\v flags -> flags { IT.exposedModules = v })
         (reqArg "MODULE" (readP_to_E ("Cannot parse module name: "++)
                                      ((Just . (:[])) `fmap` parse))
-                         (fromMaybe [] . fmap (fmap display)))
+                         (maybe [] (fmap display)))
+
+      , option [] ["extension"]
+        "Use a LANGUAGE extension (in the other-extensions field)."
+        IT.otherExts
+        (\v flags -> flags { IT.otherExts = v })
+        (reqArg "EXTENSION" (readP_to_E ("Cannot parse extension: "++)
+                                        ((Just . (:[])) `fmap` parse))
+                            (maybe [] (fmap display)))
 
       , option ['d'] ["dependency"]
         "Package dependency."
         IT.dependencies (\v flags -> flags { IT.dependencies = v })
         (reqArg "PACKAGE" (readP_to_E ("Cannot parse dependency: "++)
                                       ((Just . (:[])) `fmap` parse))
-                          (fromMaybe [] . fmap (fmap display)))
+                          (maybe [] (fmap display)))
 
       , option [] ["source-dir"]
         "Directory containing package source."
@@ -1130,6 +1333,121 @@ instance Monoid SDistExFlags where
       combine field = field a `mappend` field b
 
 -- ------------------------------------------------------------
+-- * Win32SelfUpgrade flags
+-- ------------------------------------------------------------
+
+data Win32SelfUpgradeFlags = Win32SelfUpgradeFlags {
+  win32SelfUpgradeVerbosity :: Flag Verbosity
+}
+
+defaultWin32SelfUpgradeFlags :: Win32SelfUpgradeFlags
+defaultWin32SelfUpgradeFlags = Win32SelfUpgradeFlags {
+  win32SelfUpgradeVerbosity = toFlag normal
+}
+
+win32SelfUpgradeCommand :: CommandUI Win32SelfUpgradeFlags
+win32SelfUpgradeCommand = CommandUI {
+  commandName         = "win32selfupgrade",
+  commandSynopsis     = "Self-upgrade the executable on Windows",
+  commandDescription  = Nothing,
+  commandUsage        = \pname ->
+    "Usage: " ++ pname ++ " win32selfupgrade PID PATH\n\n"
+     ++ "Flags for win32selfupgrade:",
+  commandDefaultFlags = defaultWin32SelfUpgradeFlags,
+  commandOptions      = \_ ->
+      [optionVerbosity win32SelfUpgradeVerbosity
+       (\v flags -> flags { win32SelfUpgradeVerbosity = v})
+      ]
+}
+
+instance Monoid Win32SelfUpgradeFlags where
+  mempty = defaultWin32SelfUpgradeFlags
+  mappend a b = Win32SelfUpgradeFlags {
+    win32SelfUpgradeVerbosity = combine win32SelfUpgradeVerbosity
+  }
+    where combine field = field a `mappend` field b
+
+-- ------------------------------------------------------------
+-- * Sandbox-related flags
+-- ------------------------------------------------------------
+
+data SandboxFlags = SandboxFlags {
+  sandboxVerbosity :: Flag Verbosity,
+  sandboxSnapshot  :: Flag Bool, -- FIXME: this should be an 'add-source'-only
+                                 -- flag.
+  sandboxLocation  :: Flag FilePath
+}
+
+defaultSandboxLocation :: FilePath
+defaultSandboxLocation = ".cabal-sandbox"
+
+defaultSandboxFlags :: SandboxFlags
+defaultSandboxFlags = SandboxFlags {
+  sandboxVerbosity = toFlag normal,
+  sandboxSnapshot  = toFlag False,
+  sandboxLocation  = toFlag defaultSandboxLocation
+  }
+
+sandboxCommand :: CommandUI SandboxFlags
+sandboxCommand = CommandUI {
+  commandName         = "sandbox",
+  commandSynopsis     = "Create/modify/delete a sandbox.",
+  commandDescription  = Nothing,
+  commandUsage        = \pname ->
+       "Usage: " ++ pname ++ " sandbox init\n"
+    ++ "   or: " ++ pname ++ " sandbox delete\n"
+    ++ "   or: " ++ pname ++ " sandbox add-source  [PATHS]\n\n"
+    ++ "   or: " ++ pname ++ " sandbox hc-pkg      -- [ARGS]\n"
+    ++ "   or: " ++ pname ++ " sandbox list-sources\n\n"
+    ++ "Flags for sandbox:",
+
+  commandDefaultFlags = defaultSandboxFlags,
+  commandOptions      = \_ ->
+    [ optionVerbosity sandboxVerbosity
+      (\v flags -> flags { sandboxVerbosity = v })
+
+    , option [] ["snapshot"]
+      "Take a snapshot instead of creating a link (only applies to 'add-source')"
+      sandboxSnapshot (\v flags -> flags { sandboxSnapshot = v })
+      trueArg
+
+    , option [] ["sandbox"]
+      "Sandbox location (default: './.cabal-sandbox')."
+      sandboxLocation (\v flags -> flags { sandboxLocation = v })
+      (reqArgFlag "DIR")
+    ]
+  }
+
+instance Monoid SandboxFlags where
+  mempty = SandboxFlags {
+    sandboxVerbosity = mempty,
+    sandboxSnapshot  = mempty,
+    sandboxLocation  = mempty
+    }
+  mappend a b = SandboxFlags {
+    sandboxVerbosity = combine sandboxVerbosity,
+    sandboxSnapshot  = combine sandboxSnapshot,
+    sandboxLocation  = combine sandboxLocation
+    }
+    where combine field = field a `mappend` field b
+
+-- ------------------------------------------------------------
+-- * Shared options utils
+-- ------------------------------------------------------------
+
+-- | Common parser for the @-j@ flag of @build@ and @install@.
+numJobsParser :: ReadE (Maybe Int)
+numJobsParser = ReadE $ \s ->
+  case s of
+    "$ncpus" -> Right Nothing
+    _        -> case reads s of
+      [(n, "")]
+        | n < 1     -> Left "The number of jobs should be 1 or more."
+        | n > 64    -> Left "You probably don't want that many jobs."
+        | otherwise -> Right (Just n)
+      _             -> Left "The jobs value should be a number or '$ncpus'"
+
+-- ------------------------------------------------------------
 -- * GetOpt Utils
 -- ------------------------------------------------------------
 
@@ -1141,7 +1459,7 @@ liftOptions :: (b -> a) -> (a -> b -> b)
             -> [OptionField a] -> [OptionField b]
 liftOptions get set = map (liftOption get set)
 
-yesNoOpt :: ShowOrParseArgs -> MkOptDescr (b -> Flag Bool) (Flag Bool -> (b -> b)) b
+yesNoOpt :: ShowOrParseArgs -> MkOptDescr (b -> Flag Bool) (Flag Bool -> b -> b) b
 yesNoOpt ShowArgs sf lf = trueArg sf lf
 yesNoOpt _        sf lf = boolOpt' flagToMaybe Flag (sf, lf) ([], map ("no-" ++) lf) sf lf
 
@@ -1187,10 +1505,20 @@ optionSolverFlags showOrParseArgs getmbj setmbj getrg setrg _getig _setig getsip
   ]
 
 
-usagePackages :: String -> String -> String
-usagePackages name pname =
+usageFlagsOrPackages :: String -> String -> String
+usageFlagsOrPackages name pname =
      "Usage: " ++ pname ++ " " ++ name ++ " [FLAGS]\n"
   ++ "   or: " ++ pname ++ " " ++ name ++ " [PACKAGES]\n\n"
+  ++ "Flags for " ++ name ++ ":"
+
+usagePackages :: String -> String -> String
+usagePackages name pname =
+     "Usage: " ++ pname ++ " " ++ name ++ " [PACKAGES]\n\n"
+  ++ "Flags for " ++ name ++ ":"
+
+usageFlags :: String -> String -> String
+usageFlags name pname =
+  "Usage: " ++ pname ++ " " ++ name ++ " [FLAGS]\n\n"
   ++ "Flags for " ++ name ++ ":"
 
 --TODO: do we want to allow per-package flags?

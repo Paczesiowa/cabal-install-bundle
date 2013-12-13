@@ -16,6 +16,8 @@ module Distribution.Client.Update
 
 import Distribution.Client.Types
          ( Repo(..), RemoteRepo(..), LocalRepo(..), SourcePackageDb(..) )
+import Distribution.Client.HttpUtils
+         ( DownloadResult(..) )
 import Distribution.Client.FetchUtils
          ( downloadIndex )
 import qualified Distribution.Client.PackageIndex as PackageIndex
@@ -29,21 +31,20 @@ import Distribution.Package
 import Distribution.Version
          ( anyVersion, withinRange )
 import Distribution.Simple.Utils
-         ( warn, notice, writeFileAtomic )
+         ( writeFileAtomic, warn, notice )
 import Distribution.Verbosity
          ( Verbosity )
 
 import qualified Data.ByteString.Lazy       as BS
-import qualified Data.ByteString.Lazy.Char8 as BS.Char8
 import Distribution.Client.GZipUtils (maybeDecompress)
 import qualified Data.Map as Map
 import System.FilePath (dropExtension)
 import Data.Maybe      (fromMaybe)
-import Control.Monad   (when)
+import Control.Monad   (unless)
 
 -- | 'update' downloads the package list from all known servers
 update :: Verbosity -> [Repo] -> IO ()
-update verbosity [] = do
+update verbosity [] =
   warn verbosity $ "No remote package servers have been specified. Usually "
                 ++ "you would have one specified in the config file."
 update verbosity repos = do
@@ -56,11 +57,13 @@ updateRepo verbosity repo = case repoKind repo of
   Left remoteRepo -> do
     notice verbosity $ "Downloading the latest package list from "
                     ++ remoteRepoName remoteRepo
-    indexPath <- downloadIndex verbosity remoteRepo (repoLocalDir repo)
-    writeFileAtomic (dropExtension indexPath) . BS.Char8.unpack
-                                              . maybeDecompress
-                                            =<< BS.readFile indexPath
-    updateRepoIndexCache verbosity repo
+    downloadResult <- downloadIndex verbosity remoteRepo (repoLocalDir repo)
+    case downloadResult of
+      FileAlreadyInCache -> return ()
+      FileDownloaded indexPath -> do
+        writeFileAtomic (dropExtension indexPath) . maybeDecompress
+                                                =<< BS.readFile indexPath
+        updateRepoIndexCache verbosity repo
 
 checkForSelfUpgrade :: Verbosity -> [Repo] -> IO ()
 checkForSelfUpgrade verbosity repos = do
@@ -76,8 +79,7 @@ checkForSelfUpgrade verbosity repos = do
         , version > currentVersion
         , version `withinRange` preferredVersionRange ]
 
-  when (not (null laterPreferredVersions)) $
+  unless (null laterPreferredVersions) $
     notice verbosity $
          "Note: there is a new version of cabal-install available.\n"
       ++ "To upgrade, run: cabal install cabal-install"
-

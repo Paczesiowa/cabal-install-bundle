@@ -1,9 +1,4 @@
-{-# OPTIONS -cpp #-}
--- OPTIONS required for ghc-6.4.x compat, and must appear first
 {-# LANGUAGE CPP #-}
-{-# OPTIONS_GHC -cpp #-}
-{-# OPTIONS_NHC98 -cpp #-}
-{-# OPTIONS_JHC -fcpp  #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Client.InstallSymlink
@@ -152,12 +147,12 @@ symlinkBinaries configFlags installFlags plan =
                            defaultDirs (configInstallDirs configFlags)
           absoluteDirs = InstallDirs.absoluteInstallDirs
                            (packageId pkg) compilerId InstallDirs.NoCopyDest
-                           templateDirs
+                           platform templateDirs
       canonicalizePath (InstallDirs.bindir absoluteDirs)
 
     substTemplate pkgid = InstallDirs.fromPathTemplate
                         . InstallDirs.substPathTemplate env
-      where env = InstallDirs.initialPathTemplateEnv pkgid compilerId
+      where env = InstallDirs.initialPathTemplateEnv pkgid compilerId platform
 
     fromFlagTemplate = fromFlagOrDefault (InstallDirs.toPathTemplate "")
     prefixTemplate   = fromFlagTemplate (configProgPrefix configFlags)
@@ -234,6 +229,6 @@ makeRelative a b = assert (isAbsolute a && isAbsolute b) $
       bs = splitPath b
       commonLen = length $ takeWhile id $ zipWith (==) as bs
    in joinPath $ [ ".." | _  <- drop commonLen as ]
-              ++ [  b'  | b' <- drop commonLen bs ]
+              ++ drop commonLen bs
 
 #endif

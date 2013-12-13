@@ -1,6 +1,4 @@
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
-{-# OPTIONS_NHC98 -cpp #-}
-{-# OPTIONS_JHC -fcpp -fffi #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  Distribution.Client.Win32SelfUpgrade
@@ -122,7 +120,7 @@ scheduleOurDemise verbosity dstPath tmpPath mkArgs = do
 
   let args = mkArgs (show ourPID) tmpPath
   log $ "launching child " ++ unwords (dstPath : map show args)
-  runProcess dstPath args Nothing Nothing Nothing Nothing Nothing
+  _ <- runProcess dstPath args Nothing Nothing Nothing Nothing Nothing
 
   log $ "waiting for the child to start up"
   waitForSingleObject event (10*1000) -- wait at most 10 sec

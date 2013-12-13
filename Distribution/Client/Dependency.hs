@@ -33,6 +33,9 @@ module Distribution.Client.Dependency (
     standardInstallPolicy,
     PackageSpecifier(..),
 
+    -- ** Sandbox policy
+    applySandboxInstallPolicy,
+
     -- ** Extra policy options
     dontUpgradeBasePackage,
     hideBrokenInstalledPackages,
@@ -70,13 +73,16 @@ import Distribution.Client.Dependency.Types
          , PackagePreferences(..), InstalledPreference(..)
          , PackagesPreferenceDefault(..)
          , Progress(..), foldProgress )
+import Distribution.Client.Sandbox.Types
+         ( SandboxPackageInfo(..) )
 import Distribution.Client.Targets
 import qualified Distribution.InstalledPackageInfo as Installed
 import Distribution.Package
-         ( PackageName(..), PackageId, Package(..), packageVersion
+         ( PackageName(..), PackageId, Package(..), packageName, packageVersion
          , InstalledPackageId, Dependency(Dependency))
 import Distribution.Version
-         ( Version(..), VersionRange, anyVersion, withinRange, simplifyVersionRange )
+         ( Version(..), VersionRange, anyVersion, thisVersion, withinRange
+         , simplifyVersionRange )
 import Distribution.Compiler
          ( CompilerId(..), CompilerFlavor(..) )
 import Distribution.System
@@ -235,7 +241,8 @@ addSourcePackages pkgs params =
     }
 
 hideInstalledPackagesSpecificByInstalledPackageId :: [InstalledPackageId]
-                                                     -> DepResolverParams -> DepResolverParams
+                                                     -> DepResolverParams
+                                                     -> DepResolverParams
 hideInstalledPackagesSpecificByInstalledPackageId pkgids params =
     --TODO: this should work using exclude constraints instead
     params {
@@ -245,7 +252,8 @@ hideInstalledPackagesSpecificByInstalledPackageId pkgids params =
     }
 
 hideInstalledPackagesSpecificBySourcePackageId :: [PackageId]
-                                                  -> DepResolverParams -> DepResolverParams
+                                                  -> DepResolverParams
+                                                  -> DepResolverParams
 hideInstalledPackagesSpecificBySourcePackageId pkgids params =
     --TODO: this should work using exclude constraints instead
     params {
@@ -313,6 +321,43 @@ standardInstallPolicy
   $ basicDepResolverParams
       installedPkgIndex sourcePkgIndex
 
+applySandboxInstallPolicy :: SandboxPackageInfo
+                             -> DepResolverParams
+                             -> DepResolverParams
+applySandboxInstallPolicy
+  (SandboxPackageInfo modifiedDeps otherDeps allSandboxPkgs _allDeps)
+  params
+
+  = addPreferences [ PackageInstalledPreference n PreferInstalled
+                   | n <- installedNotModified ]
+
+  . addTargets installedNotModified
+
+  . addPreferences
+      [ PackageVersionPreference (packageName pkg)
+        (thisVersion (packageVersion pkg)) | pkg <- otherDeps ]
+
+  . addConstraints
+      [ PackageConstraintVersion (packageName pkg)
+        (thisVersion (packageVersion pkg)) | pkg <- modifiedDeps ]
+
+  . addTargets [ packageName pkg | pkg <- modifiedDeps ]
+
+  . hideInstalledPackagesSpecificBySourcePackageId
+      [ packageId pkg | pkg <- modifiedDeps ]
+
+  -- We don't need to add source packages for add-source deps to the
+  -- 'installedPkgIndex' since 'getSourcePackages' did that for us.
+
+  $ params
+
+  where
+    installedPkgIds =
+      map fst . InstalledPackageIndex.allPackagesBySourcePackageId
+      $ allSandboxPkgs
+    modifiedPkgIds       = map packageId modifiedDeps
+    installedNotModified = [ packageName pkg | pkg <- installedPkgIds,
+                             pkg `notElem` modifiedPkgIds ]
 
 -- ------------------------------------------------------------
 -- * Interface to the standard resolver
@@ -353,7 +398,8 @@ resolveDependencies platform comp _solver params
 resolveDependencies platform comp  solver params =
 
     fmap (mkInstallPlan platform comp)
-  $ runSolver solver (SolverConfig reorderGoals indGoals noReinstalls shadowing maxBkjumps)
+  $ runSolver solver (SolverConfig reorderGoals indGoals noReinstalls
+                      shadowing maxBkjumps)
                      platform comp installedPkgIndex sourcePkgIndex
                      preferences constraints targets
   where
@@ -368,10 +414,10 @@ resolveDependencies platform comp  solver params =
       shadowing
       maxBkjumps      = dontUpgradeBasePackage
                       -- TODO:
-                      -- The modular solver can properly deal with broken packages
-                      -- and won't select them. So the 'hideBrokenInstalledPackages'
-                      -- function should be moved into a module that is specific
-                      -- to the Topdown solver.
+                      -- The modular solver can properly deal with broken
+                      -- packages and won't select them. So the
+                      -- 'hideBrokenInstalledPackages' function should be moved
+                      -- into a module that is specific to the Topdown solver.
                       . (if solver /= Modular then hideBrokenInstalledPackages
                                               else id)
                       $ params
@@ -448,7 +494,8 @@ resolveWithoutDependencies :: DepResolverParams
                            -> Either [ResolveNoDepsError] [SourcePackage]
 resolveWithoutDependencies (DepResolverParams targets constraints
                               prefs defpref installedPkgIndex sourcePkgIndex
-                              _reorderGoals _indGoals _avoidReinstalls _shadowing _maxBjumps) =
+                              _reorderGoals _indGoals _avoidReinstalls
+                              _shadowing _maxBjumps) =
     collectEithers (map selectPackage targets)
   where
     selectPackage :: PackageName -> Either ResolveNoDepsError SourcePackage
@@ -471,7 +518,8 @@ resolveWithoutDependencies (DepResolverParams targets constraints
                           (installPref pkg, versionPref pkg, packageVersion pkg)
         installPref   = case preferInstalled of
           PreferLatest    -> const False
-          PreferInstalled -> not . null . InstalledPackageIndex.lookupSourcePackageId
+          PreferInstalled -> not . null
+                           . InstalledPackageIndex.lookupSourcePackageId
                                                      installedPkgIndex
                            . packageId
         versionPref   pkg = packageVersion pkg `withinRange` preferredVersions

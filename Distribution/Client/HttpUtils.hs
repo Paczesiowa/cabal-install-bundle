@@ -1,8 +1,8 @@
-{-# OPTIONS -cpp #-}
 -----------------------------------------------------------------------------
--- | Separate module for HTTP actions, using a proxy server if one exists 
+-- | Separate module for HTTP actions, using a proxy server if one exists
 -----------------------------------------------------------------------------
 module Distribution.Client.HttpUtils (
+    DownloadResult(..),
     downloadURI,
     getHTTP,
     cabalBrowse,
@@ -12,148 +12,71 @@ module Distribution.Client.HttpUtils (
 
 import Network.HTTP
          ( Request (..), Response (..), RequestMethod (..)
-         , Header(..), HeaderName(..) )
+         , Header(..), HeaderName(..), lookupHeader )
+import Network.HTTP.Proxy ( Proxy(..), fetchProxy)
 import Network.URI
-         ( URI (..), URIAuth (..), parseAbsoluteURI )
+         ( URI (..), URIAuth (..) )
+import Network.Browser
+         ( BrowserAction, browse
+         , setOutHandler, setErrHandler, setProxy, setAuthorityGen, request)
 import Network.Stream
          ( Result, ConnError(..) )
-import Network.Browser
-         ( Proxy (..), Authority (..), BrowserAction, browse
-         , setOutHandler, setErrHandler, setProxy, setAuthorityGen, request)
 import Control.Monad
-         ( mplus, join, liftM, liftM2 )
+         ( liftM )
 import qualified Data.ByteString.Lazy.Char8 as ByteString
 import Data.ByteString.Lazy (ByteString)
-#ifdef WIN32
-import System.Win32.Types
-         ( DWORD, HKEY )
-import System.Win32.Registry
-         ( hKEY_CURRENT_USER, regOpenKey, regCloseKey
-         , regQueryValue, regQueryValueEx )
-import Control.Exception
-         ( bracket )
-import Distribution.Compat.Exception
-         ( handleIO )
-import Foreign
-         ( toBool, Storable(peek, sizeOf), castPtr, alloca )
-#endif
-import System.Environment (getEnvironment)
 
 import qualified Paths_cabal_install_bundle (version)
 import Distribution.Verbosity (Verbosity)
 import Distribution.Simple.Utils
-         ( die, info, warn, debug
+         ( die, info, warn, debug, notice
          , copyFileVerbose, writeFileAtomic )
 import Distribution.Text
          ( display )
+import Data.Char ( isSpace )
 import qualified System.FilePath.Posix as FilePath.Posix
          ( splitDirectories )
+import System.FilePath
+         ( (<.>) )
+import System.Directory
+         ( doesFileExist )
 
--- FIXME: all this proxy stuff is far too complicated, especially parsing
--- the proxy strings. Network.Browser should have a way to pick up the
--- proxy settings hiding all this system-dependent stuff below.
+data DownloadResult = FileAlreadyInCache | FileDownloaded FilePath deriving (Eq)
 
--- try to read the system proxy settings on windows or unix
-proxyString, envProxyString, registryProxyString :: IO (Maybe String)
-#ifdef WIN32
--- read proxy settings from the windows registry
-registryProxyString = handleIO (\_ -> return Nothing) $
-  bracket (regOpenKey hive path) regCloseKey $ \hkey -> do
-    enable <- fmap toBool $ regQueryValueDWORD hkey "ProxyEnable"
-    if enable
-        then fmap Just $ regQueryValue hkey (Just "ProxyServer")
-        else return Nothing
-  where
-    -- some sources say proxy settings should be at 
-    -- HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows
-    --                   \CurrentVersion\Internet Settings\ProxyServer
-    -- but if the user sets them with IE connection panel they seem to
-    -- end up in the following place:
-    hive  = hKEY_CURRENT_USER
-    path = "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"
+-- Trime
+trim :: String -> String
+trim = f . f
+      where f = reverse . dropWhile isSpace
 
-    regQueryValueDWORD :: HKEY -> String -> IO DWORD
-    regQueryValueDWORD hkey name = alloca $ \ptr -> do
-      regQueryValueEx hkey name (castPtr ptr) (sizeOf (undefined :: DWORD))
-      peek ptr
-#else
-registryProxyString = return Nothing
-#endif
-
--- read proxy settings by looking for an env var
-envProxyString = do
-  env <- getEnvironment
-  return (lookup "http_proxy" env `mplus` lookup "HTTP_PROXY" env)
-
-proxyString = liftM2 mplus envProxyString registryProxyString
-
-
--- |Get the local proxy settings  
+-- |Get the local proxy settings
+--TODO: print info message when we're using a proxy based on verbosity
 proxy :: Verbosity -> IO Proxy
-proxy verbosity = do
-  mstr <- proxyString
-  case mstr of
-    Nothing   -> return NoProxy
-    Just str  -> case parseHttpProxy str of
-      Nothing -> do
-        warn verbosity $ "invalid http proxy uri: " ++ show str
-        warn verbosity $ "proxy uri must be http with a hostname"
-        warn verbosity $ "ignoring http proxy, trying a direct connection"
-        return NoProxy
-      Just p  -> return p
---TODO: print info message when we're using a proxy
+proxy _verbosity = do
+  p <- fetchProxy True
+  -- Handle empty proxy strings
+  return $ case p of
+    Proxy uri auth ->
+      let uri' = trim uri in
+      if uri' == "" then NoProxy else Proxy uri' auth
+    _ -> p
 
--- | We need to be able to parse non-URIs like @\"wwwcache.example.com:80\"@
--- which lack the @\"http://\"@ URI scheme. The problem is that
--- @\"wwwcache.example.com:80\"@ is in fact a valid URI but with scheme
--- @\"wwwcache.example.com:\"@, no authority part and a path of @\"80\"@.
---
--- So our strategy is to try parsing as normal uri first and if it lacks the
--- 'uriAuthority' then we try parsing again with a @\"http://\"@ prefix.
---
-parseHttpProxy :: String -> Maybe Proxy
-parseHttpProxy str = join
-                   . fmap uri2proxy
-                   $ parseHttpURI str
-             `mplus` parseHttpURI ("http://" ++ str)
-  where
-    parseHttpURI str' = case parseAbsoluteURI str' of
-      Just uri@URI { uriAuthority = Just _ }
-         -> Just (fixUserInfo uri)
-      _  -> Nothing
-
-fixUserInfo :: URI -> URI
-fixUserInfo uri = uri{ uriAuthority = f `fmap` uriAuthority uri }
-    where
-      f a@URIAuth{ uriUserInfo = s } =
-          a{ uriUserInfo = case reverse s of
-                             '@':s' -> reverse s'
-                             _      -> s
-           }
-uri2proxy :: URI -> Maybe Proxy
-uri2proxy uri@URI{ uriScheme = "http:"
-                 , uriAuthority = Just (URIAuth auth' host port)
-                 } = Just (Proxy (host ++ port) auth)
-  where auth = if null auth'
-                 then Nothing
-                 else Just (AuthBasic "" usr pwd uri)
-        (usr,pwd') = break (==':') auth'
-        pwd        = case pwd' of
-                       ':':cs -> cs
-                       _      -> pwd'
-uri2proxy _ = Nothing
-
-mkRequest :: URI -> Request ByteString
-mkRequest uri = Request{ rqURI     = uri
-                       , rqMethod  = GET
-                       , rqHeaders = [Header HdrUserAgent userAgent]
-                       , rqBody    = ByteString.empty }
+mkRequest :: URI
+          -> Maybe String -- ^ Optional etag to be set in the If-None-Match HTTP header.
+          -> Request ByteString
+mkRequest uri etag = Request{ rqURI     = uri
+                            , rqMethod  = GET
+                            , rqHeaders = Header HdrUserAgent userAgent : ifNoneMatchHdr
+                            , rqBody    = ByteString.empty }
   where userAgent = "cabal-install/" ++ display Paths_cabal_install_bundle.version
+        ifNoneMatchHdr = maybe [] (\t -> [Header HdrIfNoneMatch t]) etag
 
 -- |Carry out a GET request, using the local proxy settings
-getHTTP :: Verbosity -> URI -> IO (Result (Response ByteString))
-getHTTP verbosity uri = liftM (\(_, resp) -> Right resp) $
-                              cabalBrowse verbosity (return ()) (request (mkRequest uri))
+getHTTP :: Verbosity
+        -> URI
+        -> Maybe String -- ^ Optional etag to check if we already have the latest file.
+        -> IO (Result (Response ByteString))
+getHTTP verbosity uri etag = liftM (\(_, resp) -> Right resp) $
+                                   cabalBrowse verbosity (return ()) (request (mkRequest uri etag))
 
 cabalBrowse :: Verbosity
             -> BrowserAction s ()
@@ -172,29 +95,56 @@ cabalBrowse verbosity auth act = do
 downloadURI :: Verbosity
             -> URI      -- ^ What to download
             -> FilePath -- ^ Where to put it
-            -> IO ()
-downloadURI verbosity uri path | uriScheme uri == "file:" =
+            -> IO DownloadResult
+downloadURI verbosity uri path | uriScheme uri == "file:" = do
   copyFileVerbose verbosity (uriPath uri) path
+  return (FileDownloaded path)
+  -- Can we store the hash of the file so we can safely return path when the
+  -- hash matches to avoid unnecessary computation?
 downloadURI verbosity uri path = do
-  result <- getHTTP verbosity uri
+  let etagPath = path <.> "etag"
+  targetExists   <- doesFileExist path
+  etagPathExists <- doesFileExist etagPath
+  -- In rare cases the target file doesn't exist, but the etag does.
+  etag <- if targetExists && etagPathExists
+            then liftM Just $ readFile etagPath
+            else return Nothing
+
+  result <- getHTTP verbosity uri etag
   let result' = case result of
         Left  err -> Left err
         Right rsp -> case rspCode rsp of
-          (2,0,0) -> Right (rspBody rsp)
+          (2,0,0) -> Right rsp
+          (3,0,4) -> Right rsp
           (a,b,c) -> Left err
             where
-              err = ErrorMisc $ "Unsucessful HTTP code: "
-                             ++ concatMap show [a,b,c]
+              err = ErrorMisc $ "Error HTTP code: "
+                                ++ concatMap show [a,b,c]
+
+  -- Only write the etag if we get a 200 response code.
+  -- A 304 still sends us an etag header.
+  case result' of
+    Left _ -> return ()
+    Right rsp -> case rspCode rsp of
+      (2,0,0) -> case lookupHeader HdrETag (rspHeaders rsp) of
+        Nothing -> return ()
+        Just newEtag -> writeFile etagPath newEtag
+      (_,_,_) -> return ()
 
   case result' of
     Left err   -> die $ "Failed to download " ++ show uri ++ " : " ++ show err
-    Right body -> do
-      info verbosity ("Downloaded to " ++ path)
-      writeFileAtomic path (ByteString.unpack body)
+    Right rsp -> case rspCode rsp of
+      (2,0,0) -> do
+        info verbosity ("Downloaded to " ++ path)
+        writeFileAtomic path $ rspBody rsp
+        return (FileDownloaded path)
+      (3,0,4) -> do
+        notice verbosity "Skipping download: Local and remote files match."
+        return FileAlreadyInCache
+      (_,_,_) -> return (FileDownloaded path)
       --FIXME: check the content-length header matches the body length.
       --TODO: stream the download into the file rather than buffering the whole
       --      thing in memory.
-      --      remember the ETag so we can not re-download if nothing changed.
 
 -- Utility function for legacy support.
 isOldHackageURI :: URI -> Bool

@@ -8,7 +8,8 @@
 -- Stability   :  provisional
 -- Portability :  portable
 --
--- Utilities for handling saved state such as known packages, known servers and downloaded packages.
+-- Utilities for handling saved state such as known packages, known servers and
+-- downloaded packages.
 -----------------------------------------------------------------------------
 module Distribution.Client.Config (
     SavedConfig(..),
@@ -21,7 +22,15 @@ module Distribution.Client.Config (
     defaultCabalDir,
     defaultConfigFile,
     defaultCacheDir,
+    defaultCompiler,
     defaultLogsDir,
+    defaultUserInstall,
+
+    baseSavedConfig,
+    commentSavedConfig,
+    initialSavedConfig,
+    configFieldDescriptions,
+    installDirsFields
   ) where
 
 
@@ -42,6 +51,7 @@ import Distribution.Simple.Compiler
 import Distribution.Simple.Setup
          ( ConfigFlags(..), configureOptions, defaultConfigFlags
          , installDirsOptions
+         , programConfigurationPaths', programConfigurationOptions
          , Flag(..), toFlag, flagToMaybe, fromFlagOrDefault )
 import Distribution.Simple.InstallDirs
          ( InstallDirs(..), defaultInstallDirs
@@ -52,6 +62,8 @@ import Distribution.ParseUtils
          , locatedErrorMsg, showPWarning
          , readFields, warning, lineNo
          , simpleField, listField, parseFilePathQ, parseTokenQ )
+import Distribution.Client.ParseUtils
+         ( parseFields, ppFields, ppSection )
 import qualified Distribution.ParseUtils as ParseUtils
          ( Field(..) )
 import qualified Distribution.Text as Text
@@ -75,24 +87,23 @@ import Data.Maybe
 import Data.Monoid
          ( Monoid(..) )
 import Control.Monad
-         ( when, foldM, liftM )
-import qualified Data.Map as Map
+         ( unless, foldM, liftM )
 import qualified Distribution.Compat.ReadP as Parse
          ( option )
 import qualified Text.PrettyPrint as Disp
-         ( Doc, render, text, colon, vcat, empty, isEmpty, nest )
+         ( render, text, empty )
 import Text.PrettyPrint
-         ( (<>), (<+>), ($$), ($+$) )
+         ( ($+$) )
 import System.Directory
-         ( createDirectoryIfMissing, getAppUserDataDirectory )
+         ( createDirectoryIfMissing, getAppUserDataDirectory, renameFile )
 import Network.URI
          ( URI(..), URIAuth(..) )
 import System.FilePath
-         ( (</>), takeDirectory )
-import System.Environment
-         ( getEnvironment )
+         ( (<.>), (</>), takeDirectory )
 import System.IO.Error
          ( isDoesNotExistError )
+import Distribution.Compat.Environment
+         ( getEnvironment )
 import Distribution.Compat.Exception
          ( catchIO )
 
@@ -192,16 +203,20 @@ initialSavedConfig = do
   cacheDir   <- defaultCacheDir
   logsDir    <- defaultLogsDir
   worldFile  <- defaultWorldFile
+  extraPath  <- defaultExtraPath
   return mempty {
     savedGlobalFlags     = mempty {
       globalCacheDir     = toFlag cacheDir,
       globalRemoteRepos  = [defaultRemoteRepo],
       globalWorldFile    = toFlag worldFile
     },
+    savedConfigureFlags  = mempty {
+      configProgramPathExtra = extraPath
+    },
     savedInstallFlags    = mempty {
       installSummaryFile = [toPathTemplate (logsDir </> "build.log")],
-      installBuildReports= toFlag AnonymousReports
-      --installNumJobs     = toFlag (Just numberOfProcessors)
+      installBuildReports= toFlag AnonymousReports,
+      installNumJobs     = toFlag Nothing
     }
   }
 
@@ -231,6 +246,11 @@ defaultWorldFile = do
   dir <- defaultCabalDir
   return $ dir </> "world"
 
+defaultExtraPath :: IO [FilePath]
+defaultExtraPath = do
+  dir <- defaultCabalDir
+  return [dir </> "bin"]
+
 defaultCompiler :: CompilerFlavor
 defaultCompiler = fromMaybe GHC defaultCompilerFlavor
 
@@ -257,7 +277,7 @@ loadConfig verbosity configFileFlag userInstallFlag = addBaseConf $ do
         ("default config file",  Just `liftM` defaultConfigFile) ]
 
       getSource [] = error "no config file path candidate found."
-      getSource ((msg,action): xs) = 
+      getSource ((msg,action): xs) =
                         action >>= maybe (getSource xs) (return . (,) msg)
 
   (source, configFile) <- getSource sources
@@ -272,15 +292,15 @@ loadConfig verbosity configFileFlag userInstallFlag = addBaseConf $ do
       writeConfigFile configFile commentConf initialConf
       return initialConf
     Just (ParseOk ws conf) -> do
-      when (not $ null ws) $ warn verbosity $
+      unless (null ws) $ warn verbosity $
         unlines (map (showPWarning configFile) ws)
       return conf
     Just (ParseFailed err) -> do
       let (line, msg) = locatedErrorMsg err
       warn verbosity $
           "Error parsing config file " ++ configFile
-        ++ maybe "" (\n -> ":" ++ show n) line ++ ":\n" ++ msg
-      warn verbosity $ "Using default configuration."
+        ++ maybe "" (\n -> ':' : show n) line ++ ":\n" ++ msg
+      warn verbosity "Using default configuration."
       initialSavedConfig
 
   where
@@ -301,8 +321,10 @@ readConfigFile initial file = handleNotExists $
 
 writeConfigFile :: FilePath -> SavedConfig -> SavedConfig -> IO ()
 writeConfigFile file comments vals = do
+  let tmpFile = file <.> "tmp"
   createDirectoryIfMissing True (takeDirectory file)
-  writeFile file $ explanation ++ showConfigWithComments comments vals ++ "\n"
+  writeFile tmpFile $ explanation ++ showConfigWithComments comments vals ++ "\n"
+  renameFile tmpFile file
   where
     explanation = unlines
       ["-- This is the configuration file for the 'cabal' command line tool."
@@ -345,7 +367,7 @@ configFieldDescriptions =
 
      toSavedConfig liftGlobalFlag
        (commandOptions globalCommand ParseArgs)
-       ["version", "numeric-version", "config-file"] []
+       ["version", "numeric-version", "config-file", "sandbox-config-file"] []
 
   ++ toSavedConfig liftConfigFlag
        (configureOptions ParseArgs)
@@ -390,7 +412,7 @@ configFieldDescriptions =
 
   ++ toSavedConfig liftInstallFlag
        (installOptions ParseArgs)
-       ["dry-run", "only"] []
+       ["dry-run", "only", "only-dependencies", "dependencies-only"] []
 
   ++ toSavedConfig liftUploadFlag
        (commandOptions uploadCommand ParseArgs)
@@ -485,28 +507,49 @@ parseConfig initial = \str -> do
   config <- parse others
   let user0   = savedUserInstallDirs config
       global0 = savedGlobalInstallDirs config
-  (user, global) <- foldM parseSections (user0, global0) knownSections
+  (user, global, paths, args) <-
+    foldM parseSections (user0, global0, [], []) knownSections
   return config {
+    savedConfigureFlags    = (savedConfigureFlags config) {
+       configProgramPaths  = paths,
+       configProgramArgs   = args
+       },
     savedUserInstallDirs   = user,
     savedGlobalInstallDirs = global
   }
 
   where
-    isKnownSection (ParseUtils.Section _ "install-dirs" _ _) = True
-    isKnownSection _                                          = False
+    isKnownSection (ParseUtils.Section _ "install-dirs" _ _)            = True
+    isKnownSection (ParseUtils.Section _ "program-locations" _ _)       = True
+    isKnownSection (ParseUtils.Section _ "program-default-options" _ _) = True
+    isKnownSection _                                                    = False
 
     parse = parseFields (configFieldDescriptions
                       ++ deprecatedFieldDescriptions) initial
 
-    parseSections accum@(u,g) (ParseUtils.Section _ "install-dirs" name fs)
+    parseSections accum@(u,g,p,a) (ParseUtils.Section _ "install-dirs" name fs)
       | name' == "user"   = do u' <- parseFields installDirsFields u fs
-                               return (u', g)
+                               return (u', g, p, a)
       | name' == "global" = do g' <- parseFields installDirsFields g fs
-                               return (u, g')
+                               return (u, g', p, a)
       | otherwise         = do
           warning "The install-paths section should be for 'user' or 'global'"
           return accum
       where name' = lowercase name
+    parseSections accum@(u,g,p,a)
+                 (ParseUtils.Section _ "program-locations" name fs)
+      | name == ""        = do p' <- parseFields withProgramsFields p fs
+                               return (u, g, p', a)
+      | otherwise         = do
+          warning "The 'program-locations' section should be unnamed"
+          return accum
+    parseSections accum@(u, g, p, a)
+                  (ParseUtils.Section _ "program-default-options" name fs)
+      | name == ""        = do a' <- parseFields withProgramOptionsFields a fs
+                               return (u, g, p, a')
+      | otherwise         = do
+          warning "The 'program-default-options' section should be unnamed"
+          return accum
     parseSections accum f = do
       warning $ "Unrecognized stanza on line " ++ show (lineNo f)
       return accum
@@ -516,52 +559,40 @@ showConfig = showConfigWithComments mempty
 
 showConfigWithComments :: SavedConfig -> SavedConfig -> String
 showConfigWithComments comment vals = Disp.render $
-      ppFields configFieldDescriptions comment vals
+      ppFields configFieldDescriptions mcomment vals
   $+$ Disp.text ""
   $+$ installDirsSection "user"   savedUserInstallDirs
   $+$ Disp.text ""
   $+$ installDirsSection "global" savedGlobalInstallDirs
+  $+$ Disp.text ""
+  $+$ configFlagsSection "program-locations" withProgramsFields
+                         configProgramPaths
+  $+$ Disp.text ""
+  $+$ configFlagsSection "program-default-options" withProgramOptionsFields
+                         configProgramArgs
   where
+    mcomment = Just comment
     installDirsSection name field =
       ppSection "install-dirs" name installDirsFields
-                (field comment) (field vals)
+                (fmap field mcomment) (field vals)
+    configFlagsSection name fields field =
+      ppSection name "" fields
+               (fmap (field . savedConfigureFlags) mcomment)
+               ((field . savedConfigureFlags) vals)
 
-------------------------
--- * Parsing utils
---
-
---FIXME: replace this with something better in Cabal-1.5
-parseFields :: [FieldDescr a] -> a -> [ParseUtils.Field] -> ParseResult a
-parseFields fields initial = foldM setField initial
-  where
-    fieldMap = Map.fromList
-      [ (name, f) | f@(FieldDescr name _ _) <- fields ]
-    setField accum (ParseUtils.F line name value) = case Map.lookup name fieldMap of
-      Just (FieldDescr _ _ set) -> set line value accum
-      Nothing -> do
-        warning $ "Unrecognized field " ++ name ++ " on line " ++ show line
-        return accum
-    setField accum f = do
-      warning $ "Unrecognized stanza on line " ++ show (lineNo f)
-      return accum
-
--- | This is a customised version of the function from Cabal that also prints
--- default values for empty fields as comments.
---
-ppFields :: [FieldDescr a] -> a -> a -> Disp.Doc
-ppFields fields def cur = Disp.vcat [ ppField name (getter def) (getter cur)
-                                    | FieldDescr name getter _ <- fields]
-
-ppField :: String -> Disp.Doc -> Disp.Doc -> Disp.Doc
-ppField name def cur
-  | Disp.isEmpty cur = Disp.text "--" <+> Disp.text name <> Disp.colon <+> def
-  | otherwise        =                    Disp.text name <> Disp.colon <+> cur
-
-ppSection :: String -> String -> [FieldDescr a] -> a -> a -> Disp.Doc
-ppSection name arg fields def cur =
-     Disp.text name <+> Disp.text arg
-  $$ Disp.nest 2 (ppFields fields def cur)
 
 installDirsFields :: [FieldDescr (InstallDirs (Flag PathTemplate))]
 installDirsFields = map viewAsFieldDescr installDirsOptions
 
+-- | Fields for the 'program-locations' section.
+withProgramsFields :: [FieldDescr [(String, FilePath)]]
+withProgramsFields =
+  map viewAsFieldDescr $
+  programConfigurationPaths' (++ "-location") defaultProgramConfiguration
+                             ParseArgs id (++)
+
+-- | Fields for the 'program-default-options' section.
+withProgramOptionsFields :: [FieldDescr [(String, [String])]]
+withProgramOptionsFields =
+  map viewAsFieldDescr $
+  programConfigurationOptions defaultProgramConfiguration ParseArgs id (++)

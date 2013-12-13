@@ -1,8 +1,9 @@
 {-# LANGUAGE CPP #-}
--- #hide
-module Distribution.Compat.FilePerms (
+{-# OPTIONS_HADDOCK hide #-}
+module Distribution.Client.Compat.FilePerms (
   setFileOrdinary,
   setFileExecutable,
+  setFileHidden,
   ) where
 
 #ifndef mingw32_HOST_OS
@@ -12,29 +13,24 @@ import System.Posix.Internals
          ( c_chmod )
 import Foreign.C
          ( withCString )
-#if MIN_VERSION_base(4,0,0)
 import Foreign.C
          ( throwErrnoPathIfMinus1_ )
 #else
-import Foreign.C
-         ( throwErrnoIfMinus1_ )
-#endif
+import System.Win32.File (setFileAttributes, fILE_ATTRIBUTE_HIDDEN)
 #endif /* mingw32_HOST_OS */
 
-setFileOrdinary,  setFileExecutable  :: FilePath -> IO ()
+setFileHidden, setFileOrdinary,  setFileExecutable  :: FilePath -> IO ()
 #ifndef mingw32_HOST_OS
 setFileOrdinary   path = setFileMode path 0o644 -- file perms -rw-r--r--
 setFileExecutable path = setFileMode path 0o755 -- file perms -rwxr-xr-x
+setFileHidden     _    = return ()
 
 setFileMode :: FilePath -> FileMode -> IO ()
 setFileMode name m =
-  withCString name $ \s -> do
-#if __GLASGOW_HASKELL__ >= 608
+  withCString name $ \s ->
     throwErrnoPathIfMinus1_ "setFileMode" name (c_chmod s m)
-#else
-    throwErrnoIfMinus1_                   name (c_chmod s m)
-#endif
 #else
 setFileOrdinary   _ = return ()
 setFileExecutable _ = return ()
+setFileHidden  path = setFileAttributes path fILE_ATTRIBUTE_HIDDEN
 #endif
